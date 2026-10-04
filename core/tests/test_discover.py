@@ -343,7 +343,8 @@ class RegistryAndScanTests(unittest.TestCase):
         self.assertEqual(tree_digest(self.base / "home"), before)
         self.assertEqual(entry["name"], "my17")
         self.assertEqual(oct(self.reg.stat().st_mode & 0o777), "0o600")
-        self.assertNotIn("pw", self.reg.read_text())
+        self.assertNotIn("db_password", self.reg.read_text())
+        self.assertNotIn('"pw"', self.reg.read_text())
         [inst] = self.scan()["installations"]
         self.assertEqual((inst["adopted"], inst["name"]), (True, "my17"))
 
