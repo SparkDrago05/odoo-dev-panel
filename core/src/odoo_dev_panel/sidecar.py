@@ -120,6 +120,8 @@ class Sidecar:
             "config.save": self.h_config_save,
             "modules.graph": self.h_modules_graph,
             "compare.run": self.h_compare,
+            "compare.databases": self.h_compare_databases,
+            "compare.installations": self.h_compare_installations,
             "docker.list": self.h_docker_list,
             "docker.plan": self.h_docker_plan,
             "docker.run": self.h_docker_run,
@@ -517,14 +519,29 @@ class Sidecar:
 
         path, snap = await self._config(params)
         name, depth = (params or {}).get("module"), (params or {}).get("depth")
+        extra, database = (params or {}).get("extra") or [], (params or {}).get("database") or None
         if name is not None and not isinstance(name, str) or depth is not None and not isinstance(depth, int):
             raise rpc.RpcError(rpc.INVALID_PARAMS, "module is text, depth is a number")
+        if not isinstance(extra, list) or not all(isinstance(e, str) and e.startswith("/") for e in extra):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "extra is a list of absolute folders")
+        if database is not None and not isinstance(database, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "database is text")
         try:
-            return await asyncio.to_thread(modules.for_config, path, snap, name, depth)
+            full = await asyncio.to_thread(modules.for_config, path, snap, name, depth, extra)
         except KeyError as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"no module {exc.args[0]} in the addons_path") from exc
         except (configedit.ConfigError, OSError) as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        full["db_error"] = None
+        if database:
+            from . import dbquery
+
+            try:
+                states = await dbquery.installed_modules(full["installation"] or "", database)
+                modules.overlay(full, states, full.get("series"))
+            except dbquery.QueryError as exc:
+                full["db_error"] = str(exc)
+        return full
 
     async def h_docker_list(self, params, _conn):
         """Odoo containers, read-only (docker ps and inspect). Its own call: a slow daemon does not slow the scan."""
@@ -666,6 +683,37 @@ class Sidecar:
             return {"command": shlex.join(mod.shell_argv(container, (params or {}).get("database") or ""))}
         except mod.DockerError as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_compare_installations(self, params, _conn):
+        """Difference between two installations as a whole: version, commit, Python, venv packages."""
+        from . import compare
+        from .discover import scan
+
+        roots = [(params or {}).get(k) for k in ("a", "b")]
+        if not all(isinstance(r, str) and r for r in roots):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "a and b are installation roots")
+        snap = await asyncio.to_thread(scan.scan, None, False)
+        try:
+            return await asyncio.to_thread(compare.compare_installations, roots[0], roots[1], snap)
+        except KeyError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"{exc.args[0]} is not a discovered installation") from exc
+
+    async def h_compare_databases(self, params, _conn):
+        """Modules that are installed in one database and not the other, or differ in state or version."""
+        from . import compare, dbquery
+
+        sides = []
+        for key in ("a", "b"):
+            side = (params or {}).get(key) or {}
+            if not isinstance(side.get("root"), str) or not isinstance(side.get("database"), str) or not side["database"]:
+                raise rpc.RpcError(rpc.INVALID_PARAMS, f"{key} needs root and database")
+            sides.append(side)
+        try:
+            a, b = [await dbquery.installed_modules(s["root"], s["database"]) for s in sides]
+        except dbquery.QueryError as exc:
+            raise rpc.RpcError(rpc.CONFLICT, str(exc)) from exc
+        return {"a": sides[0], "b": sides[1], "modules": compare.diff_modules(a, b),
+                "counts": {"a": len(a), "b": len(b)}}
 
     async def h_compare(self, params, _conn):
         """Difference between two discovered configs (``path`` and ``other``): facts, packages, addons_path, options."""

@@ -14,6 +14,8 @@ import ast
 import os
 
 MANIFEST = "__manifest__.py"
+# States of a module that is, or is becoming, part of a database.
+ACTIVE_STATES = ("installed", "to upgrade", "to install", "to remove")
 _FIELDS = ("name", "version", "summary", "category", "application", "installable", "auto_install")
 
 
@@ -145,10 +147,41 @@ def cycles(full: dict) -> list[list[str]]:
     return found
 
 
-def for_config(path: str, snapshot: dict, name: str | None = None, depth: int | None = None) -> dict:
+def full_version(version: str | None, series: str | None) -> str | None:
+    """The version Odoo stores: a manifest version that does not start with the series ("17.0.") gets it as prefix."""
+    if not version or not series:
+        return version
+    return version if version.startswith(series + ".") else f"{series}.{version}"
+
+
+def overlay(full: dict, states: dict[str, dict], series: str | None = None) -> dict:
+    """Mark each module with its state in a database (``states``: module -> {state, version}).
+
+    ``state`` is the database's state ("installed", "to upgrade", ...) or ``None`` for a module the database has
+    never seen. ``version_differs`` flags an installed module whose manifest version is not the one stored.
+    ``db_only`` lists modules the database holds as active that exist nowhere in the addons_path: Odoo logs
+    these at every start and the modules cannot be updated.
+    """
+    for name, m in full["modules"].items():
+        row = states.get(name)
+        m["db_state"] = row["state"] if row else None
+        m["db_version"] = row["version"] if row else None
+        want = full_version(m.get("version"), series)
+        m["version_differs"] = bool(row and row["state"] == "installed" and want and row["version"] and want != row["version"])
+    full["db_only"] = sorted(n for n, r in states.items() if n not in full["modules"] and r["state"] in ACTIVE_STATES)
+    full["db_counts"] = {}
+    for m in full["modules"].values():
+        key = m["db_state"] or "not in database"
+        full["db_counts"][key] = full["db_counts"].get(key, 0) + 1
+    return full
+
+
+def for_config(path: str, snapshot: dict, name: str | None = None, depth: int | None = None,
+               extra: list[str] | None = None) -> dict:
     """Scan the addons_path of the discovered config at ``path`` plus ``<source>/odoo/addons``, build the graph
-    and, with ``name``, add ``focus``. Raises ``ConfigError`` when the config does not parse, ``KeyError`` for
-    an unknown module."""
+    and, with ``name``, add ``focus``. ``extra`` are further absolute folders to look in, after the addons_path
+    (modules on disk the config does not load). Raises ``ConfigError`` when the config does not parse,
+    ``KeyError`` for an unknown module."""
     from . import configedit
 
     with open(path, encoding="utf-8") as fh:
@@ -159,8 +192,14 @@ def for_config(path: str, snapshot: dict, name: str | None = None, depth: int | 
     core_addons = os.path.join(home["source"], "odoo", "addons") if home and home.get("source") else None
     if core_addons and os.path.isdir(core_addons) and core_addons not in entries:
         entries.append(core_addons)
+    for folder in extra or []:
+        if folder not in entries:
+            entries.append(folder)
     full = graph(scan(entries))
     full["addons_paths"] = entries
+    full["series"] = home.get("version") if home else None
+    full["installation"] = home["root"] if home else None
+    full["extra"] = list(extra or [])
     full["cycles"] = cycles(full)
     if name is not None:
         full["focus"] = focus(full, name, depth)

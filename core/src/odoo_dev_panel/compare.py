@@ -99,3 +99,39 @@ def diff(a: dict, b: dict) -> dict:
 
 def compare(path_a: str, path_b: str, snapshot: dict) -> dict:
     return diff(describe(path_a, snapshot), describe(path_b, snapshot))
+
+
+def describe_installation(root: str, snapshot: dict) -> dict:
+    """The same facts for an installation as a whole: no config, so no options and no addons_path."""
+    install = next((i for i in snapshot["installations"] if i["root"] == root), None)
+    if install is None:
+        raise KeyError(root)
+    notes: list[str] = []
+    out = {"path": root, "name": install.get("name") or root, "installation": root, "version": install.get("version"),
+           "commit": git_commit(install["source"]) if install.get("source") else None,
+           "python": install.get("python_version") or install.get("venv_built_for"), "venv_ok": install.get("venv_ok"),
+           "packages": None, "options": {}, "addons_path": [], "notes": notes}
+    if install.get("venv"):
+        pkgs = packages(install["venv"])
+        if pkgs:
+            out["packages"] = pkgs
+        else:
+            notes.append(f"No packages readable in {install['venv']}.")
+    else:
+        notes.append("No venv.")
+    return out
+
+
+def compare_installations(root_a: str, root_b: str, snapshot: dict) -> dict:
+    return diff(describe_installation(root_a, snapshot), describe_installation(root_b, snapshot))
+
+
+def diff_modules(a: dict[str, dict], b: dict[str, dict]) -> dict:
+    """Modules that are part of one database and not of the other, or differ in state or version. Inputs are
+    ``dbquery.installed_modules`` results; modules that are only known, never installed, are left out."""
+    from .modules import ACTIVE_STATES
+
+    def active(m: dict[str, dict]) -> dict[str, str]:
+        return {n: f"{r['state']} {r['version']}".strip() for n, r in m.items() if r["state"] in ACTIVE_STATES}
+
+    return _diff_map(active(a), active(b))

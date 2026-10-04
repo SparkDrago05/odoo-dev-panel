@@ -143,7 +143,10 @@ export default function Discover({ onError }: { onError: (message: string) => vo
           ))}
         </p>
       )}
-      {compareOf && snap && <Compare path={compareOf} configs={snap.instances} onClose={() => setCompareOf(null)} />}
+      {compareOf && snap && (
+        <Compare path={compareOf} configs={snap.instances} installations={snap.installations} databases={snap.databases}
+          onClose={() => setCompareOf(null)} />
+      )}
       {modulesOf && <Modules path={modulesOf} onClose={() => setModulesOf(null)} />}
       {editing && <ConfigEditor path={editing.path} root={editing.root} onClose={(changed) => { setEditing(null); if (changed) scan(); }} />}
       {snap && snap.missing.length > 0 && <p className="muted">Adopted but not found: {snap.missing.map((m) => m.root).join(", ")}</p>}

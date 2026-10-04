@@ -32,17 +32,38 @@ function DiffTable({ diff, title, dim }: { diff: Diff; title: string; dim?: Set<
   );
 }
 
-export function Compare({ path, configs, onClose }: { path: string; configs: { path: string; name: string }[]; onClose: () => void }) {
+type Mode = "configs" | "installations" | "databases";
+type DbSide = { root: string; database: string };
+type ModulesResult = { a: DbSide; b: DbSide; modules: Diff; counts: { a: number; b: number } };
+
+/** Compare two configs, two installations as a whole, or the modules of two databases. */
+export function Compare({ path, configs, installations, databases, onClose }: {
+  path: string; configs: { path: string; name: string; installation: string | null }[];
+  installations: { root: string }[]; databases: { installation: string; databases: { name: string }[] }[];
+  onClose: () => void;
+}) {
   const others = configs.filter((c) => c.path !== path);
+  const mine = configs.find((c) => c.path === path);
+  const [mode, setMode] = useState<Mode>("configs");
   const [other, setOther] = useState(others[0]?.path ?? "");
+  const roots = installations.map((i) => i.root);
+  const [rootA, setRootA] = useState(mine?.installation ?? roots[0] ?? "");
+  const [rootB, setRootB] = useState(roots.find((r) => r !== (mine?.installation ?? roots[0])) ?? "");
+  const dbOptions = databases.flatMap((e) => e.databases.map((d) => `${e.installation}|${d.name}`));
+  const [dbA, setDbA] = useState(dbOptions[0] ?? "");
+  const [dbB, setDbB] = useState(dbOptions[1] ?? "");
   const [result, setResult] = useState<Result | null>(null);
+  const [modules, setModules] = useState<ModulesResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!other) return;
-    setResult(null); setError(null);
-    rpc.request<Result>("compare.run", { path, other }).then(setResult).catch((e) => setError(String(e.message)));
-  }, [path, other]);
+    setResult(null); setModules(null); setError(null);
+    const fail = (e: Error) => setError(String(e.message));
+    const side = (v: string): DbSide => { const [root, ...rest] = v.split("|"); return { root, database: rest.join("|") }; };
+    if (mode === "configs" && other) rpc.request<Result>("compare.run", { path, other }).then(setResult).catch(fail);
+    if (mode === "installations" && rootA && rootB) rpc.request<Result>("compare.installations", { a: rootA, b: rootB }).then(setResult).catch(fail);
+    if (mode === "databases" && dbA && dbB) rpc.request<ModulesResult>("compare.databases", { a: side(dbA), b: side(dbB) }).then(setModules).catch(fail);
+  }, [mode, path, other, rootA, rootB, dbA, dbB]);
 
   return (
     <div className="modal-backdrop">
@@ -52,13 +73,46 @@ export function Compare({ path, configs, onClose }: { path: string; configs: { p
           <button onClick={onClose}>Close</button>
         </div>
         <div className="row">
-          <span>{configs.find((c) => c.path === path)?.name ?? path} <span className="muted">(A)</span> with</span>
-          <select value={other} onChange={(e) => setOther(e.target.value)}>
-            {others.map((c) => <option key={c.path} value={c.path}>{c.name} · {c.path}</option>)}
-          </select>
+          {(["configs", "installations", "databases"] as Mode[]).map((m) => (
+            <button key={m} className={mode === m ? "primary" : ""} onClick={() => setMode(m)}>
+              {{ configs: "Configs", installations: "Installations", databases: "Databases" }[m]}
+            </button>
+          ))}
         </div>
+        {mode === "configs" && (
+          <div className="row">
+            <span>{mine?.name ?? path} <span className="muted">(A)</span> with</span>
+            <select value={other} onChange={(e) => setOther(e.target.value)}>
+              {others.map((c) => <option key={c.path} value={c.path}>{c.name} · {c.path}</option>)}
+            </select>
+          </div>
+        )}
+        {mode === "installations" && (
+          <div className="row">
+            <select value={rootA} onChange={(e) => setRootA(e.target.value)} aria-label="Installation A">{roots.map((r) => <option key={r}>{r}</option>)}</select>
+            <span className="muted">with</span>
+            <select value={rootB} onChange={(e) => setRootB(e.target.value)} aria-label="Installation B">{roots.map((r) => <option key={r}>{r}</option>)}</select>
+          </div>
+        )}
+        {mode === "databases" && (
+          dbOptions.length < 2 ? <p className="muted">Two databases are needed. Databases of installations that need an unlocked agent are listed once it is unlocked (rescan).</p> : (
+            <div className="row">
+              <select value={dbA} onChange={(e) => setDbA(e.target.value)} aria-label="Database A">{dbOptions.map((o) => <option key={o} value={o}>{o.replace("|", " · ")}</option>)}</select>
+              <span className="muted">with</span>
+              <select value={dbB} onChange={(e) => setDbB(e.target.value)} aria-label="Database B">{dbOptions.map((o) => <option key={o} value={o}>{o.replace("|", " · ")}</option>)}</select>
+            </div>
+          )
+        )}
         {error && <div className="error" role="alert">{error}</div>}
-        {!result && !error && other && <p className="muted">Reading…</p>}
+        {!result && !modules && !error && <p className="muted">Reading…</p>}
+        {modules && (
+          <>
+            <p className="muted">
+              A: {modules.counts.a} modules known, B: {modules.counts.b}. Only modules that are installed (or becoming installed) are compared.
+            </p>
+            <DiffTable diff={modules.modules} title="Modules (A / B: state and version)" />
+          </>
+        )}
         {result && (
           <>
             {[...result.a.notes, ...result.b.notes].map((n) => <p key={n} className="muted">{n}</p>)}
@@ -72,7 +126,7 @@ export function Compare({ path, configs, onClose }: { path: string; configs: { p
                 ))}
               </tbody>
             </table>
-            {result.addons.only_a.length + result.addons.only_b.length > 0 ? (
+            {mode === "installations" ? null : result.addons.only_a.length + result.addons.only_b.length > 0 ? (
               <>
                 <h3>addons_path</h3>
                 <table>
@@ -83,7 +137,7 @@ export function Compare({ path, configs, onClose }: { path: string; configs: { p
                 </table>
               </>
             ) : <p className="muted">addons_path: same.</p>}
-            <DiffTable diff={result.options} title="Options" dim={new Set(result.expected)} />
+            {mode !== "installations" && <DiffTable diff={result.options} title="Options" dim={new Set(result.expected)} />}
             {result.packages
               ? <DiffTable diff={result.packages} title="Python packages" />
               : <p className="muted">Python packages: not compared, one side has no readable venv.</p>}
