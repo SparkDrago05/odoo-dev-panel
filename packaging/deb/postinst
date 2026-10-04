@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+GROUP=odoo-dev
+
+if [ "$1" = configure ]; then
+    getent group "$GROUP" >/dev/null || groupadd --system "$GROUP"
+    # Keep exec bits even if the bundler copied files without them.
+    chmod 0755 /usr/lib/odoo-dev-panel/bin/* /usr/lib/odoo-dev-panel/python/bin/python3.12
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/odoo-dev-panel.conf || true
+    # Shared, uv-managed interpreters for Odoo venvs: writable by the group, readable by everyone.
+    install -d -m 2775 -o root -g "$GROUP" /opt/odoo-dev-panel /opt/odoo-dev-panel/python
+    ln -sf /usr/lib/odoo-dev-panel/bin/odp /usr/bin/odp
+    cat <<MSG
+
+Odoo Dev Panel is installed.
+Add your user and each Odoo version user to the '$GROUP' group, then log out and back in:
+    sudo usermod -aG $GROUP \$USER
+    sudo usermod -aG $GROUP odoo19
+Members of '$GROUP' can control the agents of every version user.
+
+MSG
+fi
+exit 0

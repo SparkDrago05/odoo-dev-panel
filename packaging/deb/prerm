@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stop the agents so that no process runs code from removed files.
+# Odoo processes are NOT stopped: they keep running and a new agent re-adopts them.
+set -e
+for sock in /run/odoo-dev-panel/*.sock; do
+    [ -S "$sock" ] || continue
+    user=$(basename "$sock" .sock)
+    /usr/lib/odoo-dev-panel/bin/odp agent stop -u "$user" || true
+done
+exit 0

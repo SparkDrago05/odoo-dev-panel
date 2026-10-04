@@ -1,0 +1,69 @@
+:root {
+  --bg: #f7f7f8;
+  --panel: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6b6b73;
+  --border: #dcdce0;
+  --accent: #714b67;
+  --accent-text: #ffffff;
+  --ok: #2e8540;
+  --warn: #b7791f;
+  --bad: #c53030;
+  --code-bg: #f0f0f2;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a;
+    --panel: #202024;
+    --text: #e8e8ec;
+    --muted: #9a9aa3;
+    --border: #34343a;
+    --accent: #a77d9c;
+    --accent-text: #111;
+    --code-bg: #121214;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+.layout { display: grid; gap: 12px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+header { display: flex; align-items: baseline; gap: 12px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.muted { color: var(--muted); font-weight: normal; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+tbody tr { cursor: default; }
+tbody tr.selected { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+td.actions { text-align: right; }
+button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button:disabled { opacity: 0.5; cursor: default; }
+select, input { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row.end { justify-content: flex-end; }
+.shell-input { flex: 1; min-width: 0; font-family: ui-monospace, monospace; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.running { background: var(--ok); }
+.dot.stopping { background: var(--warn); }
+.dot.error, .dot.lost { background: var(--bad); }
+div.error { background: color-mix(in srgb, var(--bad) 15%, var(--panel)); border: 1px solid var(--bad); border-radius: 8px; padding: 8px 12px; }
+code.command { display: block; margin: 8px 0; padding: 6px 8px; background: var(--code-bg); border-radius: 6px; font: 12px ui-monospace, monospace; overflow-x: auto; white-space: pre; }
+.log pre { margin: 0; height: 360px; overflow: auto; background: var(--code-bg); border-radius: 6px; padding: 8px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+.modal-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: center; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: min(420px, 92vw); display: grid; gap: 10px; }
+/* Grid items default to min-width: auto, so one long command would widen the whole dialog. */
+.modal > *, .modal li { min-width: 0; }
+.modal code.command, td code.command { white-space: pre-wrap; word-break: break-all; }
+.modal label { display: grid; gap: 4px; }
+.modal.wide { width: min(900px, 96vw); max-height: 92vh; overflow: auto; }
+/* The title row with Close stays visible while a long dialog scrolls. */
+.modal.wide > .row.between:first-child { position: sticky; top: -16px; z-index: 1; margin: -16px -16px 0; padding: 16px 16px 8px; background: var(--panel); border-radius: 10px 10px 0 0; }
+.modal textarea { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.modal h3 { font-size: 14px; margin: 4px 0; }
+.row.between { justify-content: space-between; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+pre.script { margin: 6px 0; padding: 8px; max-height: 260px; overflow: auto; background: var(--code-bg); border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+pre.script.tall { height: 360px; max-height: none; }

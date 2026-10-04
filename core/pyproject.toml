@@ -1,0 +1,19 @@
+[project]
+name = "odoo-dev-panel"
+version = "0.1.0"
+description = "Discover, diagnose and control local Odoo development environments"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+odp = "odoo_dev_panel.cli:main"
+odp-askpass = "odoo_dev_panel.askpass:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

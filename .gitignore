@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+packaging/build/
+.specstory/
+spike/.out/
+
+# Private notes (roadmap, evaluation, client details). Never published.
+private-docs/
+
+.vscode/

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Odoo Dev Panel",
+  "mainBinaryName": "odoo-dev-panel",
+  "version": "0.1.0",
+  "identifier": "io.github.sparkdrago05.odoo-dev-panel",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Odoo Dev Panel", "width": 1200, "height": 820 }],
+    "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb"],
+    "category": "Development",
+    "shortDescription": "Control center for local Odoo development environments",
+    "longDescription": "Discover, diagnose, run and stop the Odoo development environments on this workstation. Odoo instances run under their version users through per-user agents and keep running when the app closes.",
+    "license": "Apache-2.0",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "linux": {
+      "deb": {
+        "depends": ["sudo-rs | sudo", "systemd"],
+        "files": {
+          "/usr/lib/odoo-dev-panel": "../../packaging/build/odoo-dev-panel",
+          "/usr/lib/tmpfiles.d/odoo-dev-panel.conf": "../../packaging/tmpfiles.d/odoo-dev-panel.conf"
+        },
+        "postInstallScript": "../../packaging/deb/postinst",
+        "preRemoveScript": "../../packaging/deb/prerm",
+        "postRemoveScript": "../../packaging/deb/postrm"
+      }
+    }
+  }
+}

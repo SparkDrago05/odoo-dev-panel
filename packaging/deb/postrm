@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|purge)
+        rm -f /usr/bin/odp
+        rm -rf /usr/lib/odoo-dev-panel
+        ;;
+esac
+if [ "$1" = purge ]; then
+    rm -rf /run/odoo-dev-panel /opt/odoo-dev-panel
+    # The odoo-dev group stays: version users and other tools may depend on it.
+fi
+exit 0

@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Unit tests (Python 3.12, standard library only)
+        run: cd core && PYTHONPATH=src python3.12 -m unittest discover -s tests -t . -v
+      - name: Pyflakes-level lint
+        run: pipx run ruff check core/src core/tests --select F
+
+  app:
+    name: Frontend typecheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install -g pnpm@9
+      - run: cd app && pnpm install --frozen-lockfile && pnpm exec tsc --noEmit
+
+  deb:
+    name: Build .deb
+    needs: [core, app]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install -g pnpm@9
+      - name: Install uv
+        run: pipx install uv && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - name: Tag matches the version in every manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          grep -q "\"version\": \"$v\"" app/src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$v\"" app/package.json
+          grep -q "^version = \"$v\"" app/src-tauri/Cargo.toml
+          grep -q "^version = \"$v\"" core/pyproject.toml
+          grep -q "__version__ = \"$v\"" core/src/odoo_dev_panel/__init__.py
+      - name: Runtime (standalone CPython + core)
+        run: packaging/build-runtime.sh
+      - name: Tauri bundle
+        run: cd app && pnpm install --frozen-lockfile && pnpm tauri build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: app/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+  install:
+    name: Install on Ubuntu ${{ matrix.release }}
+    needs: deb
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["24.04", "26.04"]
+    container: ubuntu:${{ matrix.release }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb
+      - name: Install the package
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ./*.deb
+      - name: Smoke test
+        run: |
+          set -eux
+          getent group odoo-dev
+          test -x /usr/bin/odp
+          test -x /usr/bin/odoo-dev-panel
+          test "$(stat -c '%a %G' /opt/odoo-dev-panel/python)" = "2775 odoo-dev"
+          odp --help >/dev/null
+          odp --json discover --no-databases > /tmp/discover.json
+          /usr/lib/odoo-dev-panel/python/bin/python3.12 -c 'import json; s = json.load(open("/tmp/discover.json")); assert s["installations"] == [], s'
+      - name: Remove the package
+        run: |
+          apt-get remove -y -qq odoo-dev-panel
+          test ! -e /usr/bin/odp
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: install
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb
+      - name: Create a draft release with the .deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Tauri names the file after the product name; publish the Debian-style name the docs use.
+          deb="odoo-dev-panel_${GITHUB_REF_NAME#v}_amd64.deb"
+          mv ./*.deb "$deb"
+          sha256sum "$deb" > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" "$deb" SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+            --draft --title "Odoo Dev Panel ${GITHUB_REF_NAME#v}" --generate-notes
