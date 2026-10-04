@@ -62,7 +62,7 @@ You can edit without sudo, Odoo reads through the group, nobody else reads the p
 
 **New Odoo installation** (or `odp provision`) creates one from scratch: a run-as user, a pinned Python, a venv, the Odoo source, a PostgreSQL role and a first config. The recommended layout is `/opt/odooNN` with user `odooNN` and configs in `/etc/odoo/odooNN/`; every path and name can be changed. Root steps are one generated script that you review before it runs with a single `sudo` prompt.
 
-Supported Odoo versions: 15, 16, 17, 18, 19. PostgreSQL must be installed (`sudo apt install postgresql`).
+Supported Odoo versions: 15, 16, 17, 18, 19. Odoo 20 (Python 3.12) provisions and runs on the reference workstation; it is not yet tested on clean Ubuntu 24.04 and 26.04. PostgreSQL must be installed (`sudo apt install postgresql`).
 
 ## 4. The same from the CLI
 
