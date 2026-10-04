@@ -7,7 +7,7 @@ type Plan = { spec: Record<string, unknown>; preflight: Check[]; ok: boolean; st
 type StepEvent = { run_id: string; step: string; status: "start" | "output" | "ok" | "fail"; text: string };
 type Finished = { run_id: string; ok: boolean; error: string | null; root: string; run_as: string; conf_path: string };
 
-const VERSIONS = [19, 18, 17, 16, 15];
+const VERSIONS = [20, 19, 18, 17, 16, 15];
 const LOG_LIMIT = 400_000;
 
 type Form = {

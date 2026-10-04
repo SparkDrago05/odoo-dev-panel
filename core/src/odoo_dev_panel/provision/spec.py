@@ -8,10 +8,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-SUPPORTED_VERSIONS = (15, 16, 17, 18, 19)
+SUPPORTED_VERSIONS = (15, 16, 17, 18, 19, 20)
 
 # Python per Odoo version: inside the range each Odoo release is tested with.
-PYTHON_BY_VERSION = {15: "3.10", 16: "3.10", 17: "3.12", 18: "3.12", 19: "3.12"}
+PYTHON_BY_VERSION = {15: "3.10", 16: "3.10", 17: "3.12", 18: "3.12", 19: "3.12", 20: "3.12"}
 
 DEFAULT_ODOO_GIT = "https://github.com/odoo/odoo.git"
 GROUP = "odoo-dev"

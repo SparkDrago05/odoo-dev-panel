@@ -65,7 +65,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(spec(version=19).python, "3.12")
 
     def test_rejects_bad_input(self):
-        for kw in ({"version": 14}, {"version": 20}, {"run_as": "Bad User"}, {"root": "relative"}, {"root": "/opt/a b"},
+        for kw in ({"version": 14}, {"version": 21}, {"run_as": "Bad User"}, {"root": "relative"}, {"root": "/opt/a b"},
                    {"root": "/opt/x/"}, {"root": "/opt/../etc"}, {"root": "//opt/x"}, {"root": "/"}, {"python": "three"}, {"odoo_git": "ftp://x"}, {"odoo_git": "https://x/'; rm -rf /"},
                    {"odoo_branch": "-x"}, {"config_name": "../x"}, {"run_as": "alice"},
                    {"enterprise_git": "https://x/e.git", "enterprise_archive": "/tmp/e.zip"},

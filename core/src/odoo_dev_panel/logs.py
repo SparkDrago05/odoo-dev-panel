@@ -1,6 +1,6 @@
 """Parse Odoo server output: split it into log records, filter by level, group repeated problems.
 
-Odoo 14-19 write ``<date> <time>,<ms> <pid> <LEVEL> <db> <logger>: <message> <perf>``
+Odoo 14-20 write ``<date> <time>,<ms> <pid> <LEVEL> <db> <logger>: <message> <perf>``
 (odoo/netsvc.py). A traceback, and any other line that does not start a record, belongs to the
 record before it. Odoo 17+ may write ``_Traceback_`` instead of ``Traceback``. Output from a PTY
 session carries colour codes around the level; they are removed first.

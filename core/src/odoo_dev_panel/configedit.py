@@ -20,7 +20,7 @@ MASK = "********"
 _KEY = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*[=:]\s*)(.*?)(\s*)$")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
-# Options of odoo-bin 15-19 (odoo/tools/config.py), plus [options] keys Odoo writes itself.
+# Options of odoo-bin 15-20 (odoo/tools/config.py), plus [options] keys Odoo writes itself.
 KNOWN_OPTIONS = frozenset("""
 addons_path upgrade_path pre_upgrade_scripts server_wide_modules data_dir http_interface http_port http_enable
 xmlrpc xmlrpc_interface xmlrpc_port longpolling_port gevent_port proxy_mode x_sendfile dbfilter test_file
@@ -33,6 +33,9 @@ geoip_city_db geoip_country_db osv_memory_count_limit transient_age_limit max_cr
 workers limit_memory_hard limit_memory_soft limit_request limit_time_cpu limit_time_real limit_time_real_cron
 stop_after_init dev_mode shell_interface shell_file import_partial root_path publisher_warranty_url
 running_tests websocket_keep_alive_timeout websocket_rate_limit_burst websocket_rate_limit_delay
+bin_path db_app_name db_system default_productivity_apps gevent_workers import_file_maxbytes import_file_timeout
+import_url_regex limit_memory_hard_gevent limit_memory_soft_gevent log_config pidfile proxy_access_token
+skip_auto_install unsafe_policy with_demo
 """.split())
 _PORTS = ("http_port", "xmlrpc_port", "longpolling_port", "gevent_port", "db_port", "smtp_port")
 _BOOLEANS = ("proxy_mode", "list_db", "unaccent", "x_sendfile", "log_db", "test_enable")
