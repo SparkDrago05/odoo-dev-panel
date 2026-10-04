@@ -217,7 +217,7 @@ class ConfigChecksTest(Tmp):
              "options": {"addons_path": f"{ok},{self.base}/missing"}},
             {"path": "/etc/odoo/odoo13/ulm.conf", "installation": None, "problems": ["no installation found for this config"],
              "version_hint": "13.0", "options": {"addons_path": f"{self.base}/gone"}},
-            {"path": "/etc/odoo/odoo15/nust.conf", "installation": "/opt/odoo16", "version_hint": "15.0", "options": {},
+            {"path": "/etc/odoo/odoo15/client_c.conf", "installation": "/opt/odoo16", "version_hint": "15.0", "options": {},
              "problems": ["addons_path mixes installations: /opt/odoo15, /opt/odoo16", "config folder says 15.0 but installation is 16.0"]},
         ]
         installs = [{"root": "/opt/odoo15", "version": "15.0"}, {"root": "/opt/odoo16", "version": "16.0"}]
@@ -225,8 +225,8 @@ class ConfigChecksTest(Tmp):
         self.assertEqual(found, [
             ("H3", "addons-path-missing", "/etc/odoo/odoo14/test.conf"),
             ("H4", "config-orphan", "/etc/odoo/odoo13/ulm.conf"),  # no H3 on top for an orphan
-            ("H5", "addons-path-cross-version", "/etc/odoo/odoo15/nust.conf"),
-            ("H5", "config-folder-version", "/etc/odoo/odoo15/nust.conf"),
+            ("H5", "addons-path-cross-version", "/etc/odoo/odoo15/client_c.conf"),
+            ("H5", "config-folder-version", "/etc/odoo/odoo15/client_c.conf"),
         ])
 
     def test_secrets_readable_by_everyone(self):

@@ -104,12 +104,12 @@ class LedgerTest(unittest.TestCase):
         ledger, shown = {}, []
         tee = execute.root_ledger_tee(ledger, shown.append)
         for text in ("ODP:step user", "== Linux user and group", "ODP:created Linux user and group odoo17",
-                     "ODP:changed spark added to group odoo17", "ODP:step role"):
+                     "ODP:changed dev added to group odoo17", "ODP:step role"):
             tee({"step": "root-script", "status": "output", "text": text})
         self.assertEqual([e["text"] for e in shown], ["== Linux user and group"])
         self.assertEqual(ledger["root_script"]["last_step"], "role")
         self.assertEqual(ledger["root_script"]["created"], ["Linux user and group odoo17"])
-        self.assertEqual(ledger["root_script"]["changed"], ["spark added to group odoo17"])
+        self.assertEqual(ledger["root_script"]["changed"], ["dev added to group odoo17"])
 
     def test_receipt_falls_back_to_the_state_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
