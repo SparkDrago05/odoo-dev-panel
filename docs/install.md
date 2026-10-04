@@ -81,6 +81,7 @@ odp stop -u odoo17 <id>
 odp doctor
 odp repair config-perms /opt/odoo17          # standard permissions for its configs (sudo)
 odp config edit /etc/odoo/odoo17/client.conf # $EDITOR, passwords masked, validated, backup
+odp config set /etc/odoo/odoo17/client.conf http_port=8070 --unset workers
 odp config copy /etc/odoo/odoo17/client.conf client_b
 odp db list /opt/odoo17
 odp db clone /opt/odoo17 client_db client_db_test --neutralize

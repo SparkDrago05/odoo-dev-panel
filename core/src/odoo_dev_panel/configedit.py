@@ -35,7 +35,13 @@ stop_after_init dev_mode shell_interface shell_file import_partial root_path pub
 running_tests websocket_keep_alive_timeout websocket_rate_limit_burst websocket_rate_limit_delay
 """.split())
 _PORTS = ("http_port", "xmlrpc_port", "longpolling_port", "gevent_port", "db_port", "smtp_port")
-_INTEGERS = ("workers", "max_cron_threads", "limit_memory_hard", "limit_memory_soft", "limit_request",
+_BOOLEANS = ("proxy_mode", "list_db", "unaccent", "x_sendfile", "log_db", "test_enable")
+_CHOICES = {
+    "log_level": ("info", "debug_rpc", "warn", "test", "critical", "runbot", "debug_sql", "error", "debug",
+                  "debug_rpc_answer", "notset"),
+    "db_sslmode": ("disable", "allow", "prefer", "require", "verify-ca", "verify-full"),
+}
+_INTEGERS = ("workers","max_cron_threads", "limit_memory_hard", "limit_memory_soft", "limit_request",
              "limit_time_cpu", "limit_time_real", "limit_time_real_cron", "db_maxconn", "osv_memory_count_limit")
 
 
@@ -141,6 +147,10 @@ def validate(text: str, snapshot: dict | None = None, path: str | None = None) -
             issues.append(Issue("error", key, f"{key} = {value} is not a port (1-65535)"))
         elif key in _INTEGERS and not re.fullmatch(r"-?\d+", value):
             issues.append(Issue("error", key, f"{key} = {value} is not a whole number"))
+        elif key in _BOOLEANS and value not in ("True", "true", "false"):
+            issues.append(Issue("warning", key, f"{key} = {value}: Odoo expects True or False"))
+        elif key in _CHOICES and value not in _CHOICES[key]:
+            issues.append(Issue("warning", key, f"{key} = {value} is not one of: {', '.join(_CHOICES[key])}"))
     for entry in split_addons_path(opts.get("addons_path")):
         if not os.path.isdir(entry):
             issues.append(Issue("warning", "addons_path", f"{entry} does not exist: Odoo refuses to start"))
@@ -171,6 +181,95 @@ def _cross_checks(opts: dict[str, str], snapshot: dict, path: str | None) -> lis
             if other["path"] != path and (o.get("http_port") or o.get("xmlrpc_port")) == port:
                 issues.append(Issue("warning", "http_port", f"port {port} is also used by {other['path']}"))
     return issues
+
+
+def set_options(text: str, changes: dict[str, str | None]) -> str:
+    """Change keys of ``[options]`` in place; comments, order and other lines stay. ``None`` removes the key (Odoo
+    then uses its default). A new key goes after the last line of the section. Masked secrets pass through."""
+    for key, value in changes.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise ConfigError(f"bad option name {key!r}")
+        if value is not None and ("\n" in value or "\r" in value):
+            raise ConfigError(f"{key}: the value must be one line")
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    section = None
+    end = None  # index in out after the last non-blank line of [options]
+    done: set[str] = set()
+    skip_indent = None  # indent of a removed or replaced key whose continuation lines are dropped too
+    for line in lines:
+        body = line.rstrip("\r\n")
+        stripped = body.strip()
+        indent = len(body) - len(body.lstrip())
+        if skip_indent is not None and stripped and indent > skip_indent and not stripped.startswith((";", "#")):
+            continue
+        skip_indent = None
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            out.append(line)
+            if section == "options":
+                end = len(out)
+            continue
+        m = _KEY.match(body) if section == "options" else None
+        if m and m.group(2) in changes:
+            key = m.group(2)
+            skip_indent = indent
+            done.add(key)
+            if changes[key] is None:
+                continue
+            line = m.group(1) + key + m.group(3) + changes[key] + line[len(body):]
+        out.append(line)
+        if section == "options" and stripped:
+            end = len(out)
+    if end is None:
+        raise ConfigError("no [options] section: Odoo ignores this file")
+    new = [f"{k} = {v}\n" for k, v in changes.items() if v is not None and k not in done]
+    if new and end > 0 and not out[end - 1].endswith("\n"):
+        out[end - 1] += "\n"
+    out[end:end] = new
+    return "".join(out)
+
+
+def addons_entries(value: str | None, snapshot: dict, path: str | None) -> list[dict]:
+    """Each addons_path entry with its state: ``missing`` (H3), ``other`` (another installation than the config's,
+    H5) or ``ok``; ``installation``/``version`` name the installation it lies in, if any."""
+    from .discover.configs import _under
+
+    entries = split_addons_path(value)
+    installs = snapshot["installations"]
+    me = next((i for i in snapshot["instances"] if i["path"] == path), None)
+    home = me.get("installation") if me else None
+
+    def owner(entry: str) -> dict | None:
+        return next((i for i in installs if _under(entry, i["root"]) or _under(entry, i["source"])), None)
+
+    if home is None:  # orphan or new config: the installation most entries belong to
+        votes: dict[str, int] = {}
+        for e in entries:
+            if (o := owner(e)) is not None:
+                votes[o["root"]] = votes.get(o["root"], 0) + 1
+        home = max(votes, key=lambda r: (votes[r], r)) if votes else None
+    out = []
+    for e in entries:
+        o = owner(e)
+        state = "missing" if not os.path.isdir(e) else "other" if o and home and o["root"] != home else "ok"
+        out.append({"path": e, "state": state, "installation": o["root"] if o else None,
+                    "version": o.get("version") if o else None})
+    return out
+
+
+def form(text: str, snapshot: dict, path: str | None, changes: dict[str, str | None] | None = None) -> dict:
+    """What the form view shows: the text after ``changes``, its options (``None`` when it does not parse),
+    the addons_path entries and the issues."""
+    if changes:
+        text = set_options(text, changes)
+    try:
+        opts: dict[str, str] | None = parse(text)
+    except ConfigError:
+        opts = None
+    return {"text": text, "options": opts,
+            "addons": addons_entries((opts or {}).get("addons_path"), snapshot, path),
+            "issues": [asdict(i) for i in validate(text, snapshot, path)]}
 
 
 @dataclass

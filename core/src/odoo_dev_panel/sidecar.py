@@ -116,6 +116,7 @@ class Sidecar:
             "perms.run": self.h_perms_run,
             "config.open": self.h_config_open,
             "config.validate": self.h_config_validate,
+            "config.form": self.h_config_form,
             "config.save": self.h_config_save,
             "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
@@ -483,6 +484,20 @@ class Sidecar:
         if not isinstance(text, str):
             raise rpc.RpcError(rpc.INVALID_PARAMS, "text is required")
         return [asdict(i) for i in configedit.validate(text, snap, path)]
+
+    async def h_config_form(self, params, _conn):
+        """Form view data for ``text`` (masked or not) after the optional ``changes`` ({key: value or null})."""
+        from . import configedit
+
+        path, snap = await self._config(params)
+        text, changes = (params or {}).get("text"), (params or {}).get("changes") or {}
+        if not isinstance(text, str) or not isinstance(changes, dict) or \
+                not all(isinstance(v, str) or v is None for v in changes.values()):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "text is required; changes maps option names to text or null")
+        try:
+            return await asyncio.to_thread(configedit.form, text, snap, path, changes)
+        except configedit.ConfigError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
 
     async def h_config_save(self, params, _conn):
         from . import configedit

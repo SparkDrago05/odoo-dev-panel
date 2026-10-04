@@ -62,6 +62,58 @@ class ValidateTest(unittest.TestCase):
         self.assertTrue(any(i.key == "http_port" and "/b.conf" in i.text for i in issues))
 
 
+class SetOptionsTest(unittest.TestCase):
+    TEXT = "[options]\n; keep me\naddons_path = /a,\n    /b\nhttp_port = 8069\ndb_password = ********\n\n[other]\nhttp_port = 1\n"
+
+    def test_replace_remove_add_keep_rest(self):
+        out = ce.set_options(self.TEXT, {"http_port": "8070", "addons_path": "/c", "workers": "2", "db_password": None})
+        self.assertEqual(out, "[options]\n; keep me\naddons_path = /c\nhttp_port = 8070\nworkers = 2\n\n"
+                              "[other]\nhttp_port = 1\n")
+
+    def test_removed_key_drops_its_continuation_lines(self):
+        out = ce.set_options(self.TEXT, {"addons_path": None})
+        self.assertNotIn("/b", out)
+        self.assertIn("; keep me\nhttp_port = 8069", out)
+
+    def test_masked_secret_survives_a_form_change_and_save(self):
+        self.assertIn("db_password = ********", ce.set_options(self.TEXT, {"http_port": "1"}))
+
+    def test_refused(self):
+        with self.assertRaises(ce.ConfigError):
+            ce.set_options("[other]\n", {"http_port": "1"})
+        with self.assertRaises(ce.ConfigError):
+            ce.set_options(self.TEXT, {"http_port": "1\nadmin_passwd = x"})
+        with self.assertRaises(ce.ConfigError):
+            ce.set_options(self.TEXT, {"a b": "1"})
+
+    def test_no_trailing_newline(self):
+        self.assertEqual(ce.set_options("[options]\nhttp_port = 1", {"workers": "2"}),
+                         "[options]\nhttp_port = 1\nworkers = 2\n")
+
+    def test_booleans_and_choices_warn(self):
+        issues = ce.validate("[options]\nproxy_mode = yes\nlog_level = loud\nlist_db = True\n")
+        self.assertEqual({(i.level, i.key) for i in issues}, {("warning", "proxy_mode"), ("warning", "log_level")})
+
+
+class AddonsEntriesTest(unittest.TestCase):
+    def test_states(self):
+        with tempfile.TemporaryDirectory() as d:
+            for sub in ("o17/odoo/addons", "o18/odoo/addons", "custom"):
+                os.makedirs(os.path.join(d, sub))
+            snap = {"installations": [{"root": f"{d}/o17", "source": f"{d}/o17/odoo", "version": "17.0", "owner": None},
+                                      {"root": f"{d}/o18", "source": f"{d}/o18/odoo", "version": "18.0", "owner": None}],
+                    "instances": [{"path": "/a.conf", "installation": f"{d}/o17", "options": {}}]}
+            value = f"{d}/o17/odoo/addons,{d}/o18/odoo/addons,{d}/custom,{d}/gone"
+            got = [(e["state"], e["version"]) for e in ce.addons_entries(value, snap, "/a.conf")]
+            self.assertEqual(got, [("ok", "17.0"), ("other", "18.0"), ("ok", None), ("missing", None)])
+            # A config discovery does not link: the installation most entries lie in.
+            got = [e["state"] for e in ce.addons_entries(f"{d}/o18/odoo/addons,{d}/o18/odoo/addons", snap, "/new.conf")]
+            self.assertEqual(got, ["ok", "ok"])
+            form = ce.form("[options]\nhttp_port = 1\n", snap, "/a.conf", {"addons_path": f"{d}/custom"})
+            self.assertEqual(form["options"], {"http_port": "1", "addons_path": f"{d}/custom"})
+            self.assertEqual(ce.form("garbage", snap, "/a.conf")["options"], None)
+
+
 class SaveTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()

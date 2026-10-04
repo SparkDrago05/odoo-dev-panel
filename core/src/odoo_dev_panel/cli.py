@@ -538,6 +538,8 @@ def cmd_config(args) -> int:
             return 0
         if args.config_command == "edit":
             return _config_edit(path, snap)
+        if args.config_command == "set":
+            return _config_set(path, snap, args.assignments, args.unset)
     except configedit.ConfigError as exc:
         print(f"odp: {exc}", file=sys.stderr)
         return 1
@@ -584,6 +586,34 @@ def _config_edit(path: str, snap: dict) -> int:
             result = configedit.save(path, text, opened.sha, snap)
             print(f"saved; previous version in {result['backup']}" if result["changed"] else "no change")
             return 0
+
+
+def _config_set(path: str, snap: dict, assignments: list[str], unset: list[str]) -> int:
+    """Set or remove options in place, validate, save with a backup."""
+    from . import configedit
+
+    changes: dict[str, str | None] = {}
+    for item in assignments:
+        key, sep, value = item.partition("=")
+        if not sep:
+            print(f"odp: {item!r} is not KEY=VALUE", file=sys.stderr)
+            return 2
+        changes[key.strip()] = value.strip()
+    changes.update({key: None for key in unset})
+    if not changes:
+        print("odp: nothing to set: give KEY=VALUE or --unset KEY", file=sys.stderr)
+        return 2
+    current = _read_text(path)
+    text = configedit.set_options(current, changes)
+    issues = configedit.validate(text, snap, path)
+    for i in issues:
+        print(f"{i.level.upper():7} {i.key or '-':18} {i.text}", file=sys.stderr)
+    if any(i.level == "error" for i in issues):
+        print("not saved", file=sys.stderr)
+        return 1
+    result = configedit.save(path, text, configedit.sha(current), snap)
+    print(f"saved; previous version in {result['backup']}" if result["changed"] else "no change")
+    return 0
 
 
 def _db_report(event: dict) -> None:
@@ -742,13 +772,18 @@ def build_parser() -> argparse.ArgumentParser:
     config = sub.add_parser("config", help="show, check, edit or copy a discovered Odoo config").add_subparsers(
         dest="config_command", required=True)
     for name, help_ in (("show", "print the config, passwords masked"), ("check", "validate the config"),
-                        ("edit", "edit in $EDITOR, validate, save with a backup"), ("copy", "new config next to it")):
+                        ("edit", "edit in $EDITOR, validate, save with a backup"), ("copy", "new config next to it"),
+                        ("set", "set or remove options, validate, save with a backup")):
         c = config.add_parser(name, help=help_)
         c.add_argument("path", help="config file")
         if name == "show":
             c.add_argument("--reveal", action="store_true", help="show the passwords too")
         if name == "copy":
             c.add_argument("name", help="new config name, e.g. client_b")
+        if name == "set":
+            c.add_argument("assignments", nargs="*", metavar="KEY=VALUE", help="e.g. http_port=8070 workers=2")
+            c.add_argument("--unset", action="append", default=[], metavar="KEY",
+                           help="remove the option, so Odoo uses its default (repeatable)")
 
     db = sub.add_parser("db", help="databases of an installation: list, backup, restore, clone, drop, neutralize").add_subparsers(
         dest="db_command", required=True)
