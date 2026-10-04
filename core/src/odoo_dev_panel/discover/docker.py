@@ -140,7 +140,22 @@ def _compose(row: dict) -> dict | None:
 
 def _state(row: dict) -> dict:
     state = row.get("State") or {}
-    return {"status": state.get("Status"), "running": bool(state.get("Running")), "started_at": state.get("StartedAt")}
+    return {"status": state.get("Status"), "running": bool(state.get("Running")), "started_at": state.get("StartedAt"),
+            "exit_code": state.get("ExitCode"), "oom_killed": bool(state.get("OOMKilled"))}
+
+
+def odoo_program(row: dict) -> str:
+    """The odoo executable the container starts, as the official entrypoint expects it as first argument."""
+    for part in _command(row):
+        if _ODOO_CMD.search(part):
+            return part
+    return "odoo"
+
+
+def entrypoint(row: dict) -> list[str]:
+    """The image entrypoint. Odoo run inside the container must go through it: the official one turns the HOST,
+    USER and PASSWORD variables into database options."""
+    return [p for p in (row.get("Config") or {}).get("Entrypoint") or [] if isinstance(p, str)]
 
 
 def _name(row: dict) -> str:
@@ -160,7 +175,7 @@ def odoo_containers(rows: list[dict]) -> list[dict]:
             continue
         env, mounts, compose = _env(row), _mounts(row), _compose(row)
         db_host = env.get("HOST") or None
-        db_container = None
+        db_container, pick = None, None
         if compose:
             peers = [r for r in rows if (_compose(r) or {}).get("project") == compose["project"] and _is_postgres(r)]
             named = [r for r in peers if db_host in ((_compose(r) or {}).get("service"), _name(r))]
@@ -170,6 +185,11 @@ def odoo_containers(rows: list[dict]) -> list[dict]:
         out.append({
             "id": (row.get("Id") or "")[:12],
             "name": _name(row),
+            "image_id": row.get("Image"),
+            "user": (row.get("Config") or {}).get("User") or None,
+            "entrypoint": entrypoint(row),
+            "program": odoo_program(row),
+            "restart": ((row.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name") or None,
             "image": (row.get("Config") or {}).get("Image") or row.get("Image"),
             "version": _version(row),
             **_state(row),
@@ -179,7 +199,8 @@ def odoo_containers(rows: list[dict]) -> list[dict]:
             "addons": [host_path(m["destination"], mounts) for m in mounts if "addons" in m["destination"]],
             "data": host_path(DATA_DIR, mounts) if any(m["destination"].startswith(DATA_DIR) for m in mounts) else None,
             "db": {"host": db_host, "port": env.get("PORT") or None, "user": env.get("USER") or None,
-                   "container": db_container},
+                   "container": db_container, "running": bool(((pick or {}).get("State") or {}).get("Running"))
+                   if db_container else None},
             "mounts": mounts,
         })
     return sorted(out, key=lambda c: ((c["compose"] or {}).get("project") or "", c["name"]))

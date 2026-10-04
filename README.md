@@ -9,7 +9,7 @@ One control center for the Odoo development environments on an Ubuntu workstatio
 - **Snapshots** before risky work: one click, or automatically before a module upgrade. Revert puts a database back and keeps the replaced one under a new name.
 - **Modules:** a dependency view of any config's addons paths: depends, required by, missing, shadowed and cyclic modules. Manifests are read, never imported.
 - **Compare** two configs: Odoo version, git commit, Python, venv packages, addons paths and options, with expected differences marked.
-- **Docker:** Odoo containers are listed next to native installations: image, version, compose project, ports, and where config, addons and data live on the host. Read-only for now.
+- **Docker:** Odoo containers sit next to native installations: image, version, compose project, ports, and where config, addons and data live on the host. Start, stop, restart, read the log with problems grouped, upgrade modules, back up, snapshot, restore, clone and drop databases of a container with its own PostgreSQL container. Doctor checks port clashes, a stopped database container, exit codes, missing mounts and unreadable configs.
 - **Provision** a new installation for Odoo 15–20 with a pinned Python, a venv, a PostgreSQL role and a first config.
 - A desktop app and the `odp` CLI with the same features.
 

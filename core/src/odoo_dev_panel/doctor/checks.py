@@ -18,7 +18,7 @@ from typing import Callable
 
 from .. import paths
 from ..discover import venv as venv_mod
-from ..discover.configs import parse_config
+from ..discover.configs import parse_config, split_addons_path
 from ..provision.spec import PYTHON_BY_VERSION
 from . import requirements
 
@@ -57,6 +57,26 @@ WHY = {
     "config-permissions": "Configs should be owned by you (so you can edit them without sudo), readable by the "
                           "run-as user's group (so Odoo can read them) and by nobody else (they hold passwords). "
                           "Their folder should give new configs the run-as group.",
+    "docker-port-conflict": "A stopped container publishes a host port that another process holds. Starting it fails "
+                            "with \"address already in use\".",
+    "docker-db-down": "The Odoo container is running but its database container is not, so every request fails with "
+                      "a connection error.",
+    "docker-exited": "The container stopped with an error. Its log, or a missing volume, says why. If the exit code "
+                     "is 137 and the container was killed for memory, it needs more memory.",
+    "docker-bind-missing": "A bind-mounted folder or file does not exist on this machine. Docker creates a missing "
+                           "folder owned by root at start, which Odoo's user cannot write, and a missing config "
+                           "file makes the container run without its config.",
+    "docker-data-readonly": "Odoo writes its filestore and sessions to the data folder. Mounted read-only, uploads "
+                            "and logins fail.",
+    "docker-config-permissions": "The config is bind-mounted and the user inside the container cannot read it: it is "
+                                 "owned by someone else and not readable by others. Odoo then starts with its "
+                                 "defaults and ignores the config.",
+    "docker-addons-missing": "Odoo refuses to start when an addons_path entry does not exist "
+                             "(\"option addons_path: no such directory\"). This entry is inside a bind mount, and the "
+                             "folder is missing on the host.",
+    "docker-version-mismatch": "The container runs Odoo source mounted from this machine, and it is another Odoo "
+                               "version than the image. Python packages in the image fit the image's version, not "
+                               "the mounted source.",
     "filestore-missing": "Odoo keeps attachments, images and assets in the filestore of the OS user that runs "
                          "it. Without it, images and attachments are missing and asset bundles may fail.",
 }
@@ -87,10 +107,23 @@ class Context:
     dev_user: str = field(default_factory=lambda: pwd.getpwuid(os.getuid()).pw_name)
     uid: int = field(default_factory=os.getuid)
     git: Callable[[str], str] = None  # path -> stderr of a git command in it  # type: ignore[assignment]
+    docker: Callable[[], dict] = None  # Odoo containers, as ``discover.docker.discover_docker``  # type: ignore[assignment]
+    listening: Callable[[], dict] = None  # host listening ports  # type: ignore[assignment]
+    uid_of: Callable[[dict], int | None] = None  # container -> uid it runs as  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.git is None:
             self.git = git_stderr
+        if self.docker is None:
+            from ..discover import docker
+
+            self.docker = docker.discover_docker
+        if self.uid_of is None:
+            self.uid_of = container_uid
+        if self.listening is None:
+            from ..discover import ports
+
+            self.listening = ports.listening_ports
 
 
 def git_stderr(path: str) -> str:
@@ -419,4 +452,94 @@ def check_filestores(ctx: Context) -> list[Finding]:
     return out
 
 
-CHECKS = (check_venv, check_configs, check_git, check_runtime, check_secrets, check_filestores, check_config_permissions)
+# -- H14, H15: Odoo in Docker ------------------------------------------------
+
+_IN_IMAGE_ROOTS = ("/usr/lib/python3", "/opt/odoo", "/odoo", "/usr/local/lib")
+
+
+def container_uid(c: dict) -> int | None:
+    """The numeric user the container runs as. A name such as ``odoo`` is resolved by the image itself: a throwaway
+    container prints ``id -u``, since the number differs between images (100 or 101 for the official one)."""
+    user = (c.get("user") or "").split(":")[0]
+    if user.isdigit():
+        return int(user)
+    argv = ["docker", "run", "--rm", "--network", "none", *(["--user", user] if user else []), "--entrypoint", "id",
+            c.get("image_id") or "", "-u"]
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return int(out) if out.isdigit() else None
+
+
+def check_docker(ctx: Context) -> list[Finding]:
+    """Read-only: what a container needs from this machine and from its neighbours. Silent without Docker."""
+    from ..discover.docker import host_path
+
+    result = ctx.docker()
+    if not result.get("available"):
+        return []
+    containers = result["containers"]
+    published = {p["host_port"] for c in containers if c["running"] for p in c["ports"]}
+    listening = set(ctx.listening()) - published
+    out: list[Finding] = []
+    for c in containers:
+        name = c["name"]
+        if not c["running"]:
+            for port in sorted({p["host_port"] for p in c["ports"]} & listening):
+                out.append(Finding("H14", "docker-port-conflict", WARNING, f"{name}:{port}",
+                                   f"Container {name} cannot start: host port {port} is in use",
+                                   "Another process listens on it. Stop that process or change the port mapping.",
+                                   commands=[f"ss -ltnp 'sport = :{port}'"]))
+            if c["status"] == "exited" and c["exit_code"] not in (0, None):
+                oom = " It was killed for running out of memory." if c["oom_killed"] else ""
+                out.append(Finding("H14", "docker-exited", ERROR, name, f"Container {name} exited with code {c['exit_code']}",
+                                   oom.strip(), commands=[f"odp docker logs {name} --problems", f"docker logs --tail 50 {name}"]))
+        elif c["db"]["container"] and c["db"]["running"] is False:
+            out.append(Finding("H14", "docker-db-down", ERROR, name, f"Database container {c['db']['container']} of {name} is not running",
+                               commands=[f"docker start {c['db']['container']}"]))
+        for m in c["mounts"]:
+            if m["type"] != "bind" or not m["source"]:
+                continue
+            if not os.path.lexists(m["source"]):
+                out.append(Finding("H15", "docker-bind-missing", WARNING, f"{name}:{m['destination']}",
+                                   f"{name} mounts {m['source']}, which does not exist",
+                                   f"Inside the container: {m['destination']}.", commands=[f"mkdir -p {q(m['source'])}"]))
+            if m["destination"].rstrip("/") == "/var/lib/odoo" and not m["rw"]:
+                out.append(Finding("H15", "docker-data-readonly", ERROR, f"{name}:{m['destination']}",
+                                   f"{name} mounts the Odoo data folder read-only", f"{m['source']} -> {m['destination']}"))
+        conf = (c.get("config") or {}).get("host")
+        if conf and os.path.isfile(conf):
+            st = os.stat(conf)
+            uid = ctx.uid_of(c) if not st.st_mode & 0o004 else None  # only a file others cannot read needs the answer
+            if uid is not None and st.st_uid != uid:
+                out.append(Finding("H15", "docker-config-permissions", WARNING, f"{name}:{conf}",
+                                   f"The user inside {name} (uid {uid}) cannot read {conf}",
+                                   f"Mode {stat.S_IMODE(st.st_mode):o}, owner uid {st.st_uid}.",
+                                   commands=[f"chmod o+r {q(conf)}   # it holds passwords: or chown it to uid {uid}"]))
+            for entry in split_addons_path((parse_config(Path(conf)) or {}).get("addons_path")):
+                place = host_path(entry, c["mounts"])
+                if place and place["host"] and not os.path.isdir(place["host"]):
+                    out.append(Finding("H15", "docker-addons-missing", ERROR, f"{name}:{entry}",
+                                       f"addons_path entry {entry} of {name} does not exist on the host",
+                                       f"Expected {place['host']}.", commands=[f"mkdir -p {q(place['host'])}"]))
+        want = (c.get("version") or "").split(".")[0]
+        for m in c["mounts"]:
+            source = m["source"] if m["type"] == "bind" else None
+            if source and want and os.path.isfile(os.path.join(source, "odoo-bin")):
+                mounted = _source_version(source)
+                if mounted and mounted.split(".")[0] != want:
+                    out.append(Finding("H15", "docker-version-mismatch", WARNING, f"{name}:{m['destination']}",
+                                       f"{name} runs image Odoo {c['version']} with mounted source Odoo {mounted}",
+                                       f"{source} is mounted at {m['destination']}."))
+    return out
+
+
+def _source_version(source: str) -> str | None:
+    from ..discover.installs import read_version
+
+    return read_version(Path(source))
+
+
+CHECKS = (check_venv, check_configs, check_git, check_runtime, check_secrets, check_filestores, check_config_permissions,
+          check_docker)

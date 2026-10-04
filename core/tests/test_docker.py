@@ -66,7 +66,7 @@ class Pure(unittest.TestCase):
                                        "volume": None, "anonymous": False, "in_image": False})
         self.assertEqual(c["addons"][0]["host"], "/home/dev/shop/addons")
         self.assertEqual(c["data"], {"container": "/var/lib/odoo", "host": None, "volume": "shop_odoo-web-data", "anonymous": False, "in_image": False})
-        self.assertEqual(c["db"], {"host": "db", "port": None, "user": "odoo", "container": "shop-db-1"})
+        self.assertEqual(c["db"], {"host": "db", "port": None, "user": "odoo", "container": "shop-db-1", "running": True})
         self.assertEqual([(p["host_port"], p["container"]) for p in c["ports"]], [(10017, "8069/tcp")])
 
     def test_secrets_never_kept(self):

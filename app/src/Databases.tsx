@@ -28,7 +28,13 @@ export default function Databases({ onError }: { onError: (message: string) => v
 
   useEffect(() => {
     rpc.request<{ installations: { root: string; version: string | null }[] }>("discover.scan", { no_databases: true })
-      .then((s) => { setRoots(s.installations); if (s.installations[0]) setRoot(s.installations[0].root); })
+      .then(async (s) => {
+        // Containers with a database container of their own are listed too, as docker:<name>.
+        const found = await rpc.request<{ containers: { name: string; db: { container: string | null } }[] }>("docker.list").catch(() => ({ containers: [] }));
+        const all = [...s.installations, ...found.containers.filter((c) => c.db.container).map((c) => ({ root: `docker:${c.name}`, version: null }))];
+        setRoots(all);
+        if (all[0]) setRoot(all[0].root);
+      })
       .catch((e) => onError(String(e.message)));
   }, []);
 
@@ -54,7 +60,11 @@ export default function Databases({ onError }: { onError: (message: string) => v
       <h2>Databases</h2>
       <div className="row">
         <select value={root} onChange={(e) => setRoot(e.target.value)}>
-          {roots.map((r) => <option key={r.root} value={r.root}>{r.root}{r.version ? ` (Odoo ${r.version})` : ""}</option>)}
+          {roots.map((r) => (
+            <option key={r.root} value={r.root}>
+              {r.root.startsWith("docker:") ? `Docker container ${r.root.slice(7)}` : r.root}{r.version ? ` (Odoo ${r.version})` : ""}
+            </option>
+          ))}
         </select>
         <button onClick={load} disabled={loading || !root}>{loading ? "Loading…" : "Refresh"}</button>
         <button disabled={!root} onClick={() => setDialog({ action: "restore" })}>Restore backup…</button>
@@ -88,7 +98,7 @@ export default function Databases({ onError }: { onError: (message: string) => v
         <>
           <h3>Snapshots</h3>
           {snaps.error && <p className="muted">Snapshots could not be listed: {snaps.error}</p>}
-          {!snaps.error && snaps.snapshots.length === 0 && <p className="muted">No snapshots. Snapshot a database above, or tick "Snapshot first" on an upgrade run.</p>}
+          {!snaps.error && snaps.snapshots.length === 0 && <p className="muted">No snapshots. Snapshot a database above{root.startsWith("docker:") ? "" : ', or tick "Snapshot first" on an upgrade run'}.</p>}
           {snaps.snapshots.length > 0 && (
             <table>
               <tbody>

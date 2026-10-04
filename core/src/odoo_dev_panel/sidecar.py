@@ -121,6 +121,10 @@ class Sidecar:
             "modules.graph": self.h_modules_graph,
             "compare.run": self.h_compare,
             "docker.list": self.h_docker_list,
+            "docker.plan": self.h_docker_plan,
+            "docker.run": self.h_docker_run,
+            "docker.logs": self.h_docker_logs,
+            "docker.shell": self.h_docker_shell,
             "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
             "db.plan": self.h_db_plan,
@@ -524,6 +528,72 @@ class Sidecar:
 
         return await asyncio.to_thread(docker.discover_docker)
 
+    async def _docker_target(self, params):
+        from . import dockerops
+        from .discover import docker
+
+        name = (params or {}).get("container")
+        found = await asyncio.to_thread(docker.discover_docker)
+        if found["error"]:
+            raise rpc.RpcError(rpc.CONFLICT, found["error"])
+        try:
+            return dockerops, dockerops.find(found["containers"], name), found["containers"]
+        except dockerops.DockerError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def _docker_plan(self, params):
+        mod, container, everything = await self._docker_target(params)
+        kind = params.get("action")
+        if kind not in mod.KINDS:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"action must be one of {', '.join(mod.KINDS)}")
+        try:
+            return await asyncio.to_thread(mod.plan_action, kind, container, everything, params.get("database") or None,
+                                           params.get("update"), params.get("install"))
+        except mod.DockerError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_docker_plan(self, params, _conn):
+        """Dry run of start, stop, restart or a module upgrade in a container: checks, steps. Changes nothing."""
+        return (await self._docker_plan(params)).as_dict()
+
+    async def h_docker_run(self, params, _conn):
+        """Run a container action in the background. Progress arrives as docker.step, the end as docker.finished."""
+        from . import dockerops
+
+        plan = await self._docker_plan(params)
+        if not plan.ok:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c.detail for c in plan.checks if c.status == "fail"))
+
+        async def work(report) -> dict:
+            return await dockerops.run_action(plan, report)
+
+        run_id = self._start_job("docker", work, {"container": plan.container, "action": plan.kind})
+        return {"run_id": run_id, "container": plan.container}
+
+    async def h_docker_logs(self, params, _conn):
+        """The last lines of a container's log, grouped like a session log (levels, tracebacks, repeats)."""
+        from . import logs
+
+        mod, container, _all = await self._docker_target(params)
+        tail = (params or {}).get("tail", 500)
+        if not isinstance(tail, int) or isinstance(tail, bool):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "tail must be a number")
+        try:
+            text = await asyncio.to_thread(mod.read_logs, container["name"], tail)
+        except mod.DockerError as exc:
+            raise rpc.RpcError(rpc.CONFLICT, str(exc)) from exc
+        return {"text": text, "analysis": logs.analyze(text)}
+
+    async def h_docker_shell(self, params, _conn):
+        """The command that opens ``odoo shell`` in the container. It needs a terminal: the app shows it, you run it."""
+        import shlex
+
+        mod, container, _all = await self._docker_target(params)
+        try:
+            return {"command": shlex.join(mod.shell_argv(container, (params or {}).get("database") or ""))}
+        except mod.DockerError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
     async def h_compare(self, params, _conn):
         """Difference between two discovered configs (``path`` and ``other``): facts, packages, addons_path, options."""
         from . import compare
@@ -569,21 +639,38 @@ class Sidecar:
         if not isinstance(root, str) or not root:
             raise rpc.RpcError(rpc.INVALID_PARAMS, "root is required")
         try:
+            if root.startswith("docker:"):
+                from . import dockerdb, dockerops
+
+                try:
+                    return await dockerdb.prepare(root[len("docker:"):])
+                except dockerops.DockerError as exc:
+                    raise context.NotFound(str(exc)) from exc
             return await context.prepare(root)
         except context.NotFound as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    @staticmethod
+    def _db_module(params):
+        """``database.ops`` for an installation root, ``dockerdb`` for ``docker:<container>``: same interface."""
+        from . import dockerdb
+        from .database import ops
+
+        return dockerdb if str((params or {}).get("root", "")).startswith("docker:") else ops
 
     async def h_db_list(self, params, _conn):
         """Databases of one installation's role, plus the recipes that can be run on them."""
         from .database import recipes
 
         _inst, ctx = await self._db_prepare(params)
+        if self._db_module(params).__name__.endswith("dockerdb"):
+            return {"databases": ctx.databases, "error": ctx.list_error, "recipes": await asyncio.to_thread(recipes.available),
+                    "agent_running": None}
         return {"databases": ctx.databases, "error": getattr(ctx, "listing_error", None),
                 "recipes": await asyncio.to_thread(recipes.available), "agent_running": ctx.agent_running}
 
     async def _db_plan(self, params):
-        from .database import ops
-
+        ops = self._db_module(params)
         inst, ctx = await self._db_prepare(params)
         fields = {k: params.get(k) or None for k in ("source", "target", "backup", "dest", "recipe", "confirm")}
         for key, value in fields.items():
@@ -603,8 +690,7 @@ class Sidecar:
 
     async def h_db_run(self, params, _conn):
         """Run a database action in the background. Progress arrives as db.step, the end as db.finished."""
-        from .database import ops
-
+        ops = self._db_module(params)
         plan = await self._db_plan(params)
         if not plan.ok:
             raise rpc.RpcError(rpc.CONFLICT, "; ".join(c.detail for c in plan.checks if c.status == "fail"))
@@ -616,11 +702,14 @@ class Sidecar:
         return {"run_id": run_id, "root": plan.root}
 
     async def h_db_snapshots(self, params, _conn):
-        """Snapshots of one installation (optionally of one database), newest first. Read as the run-as user."""
+        """Snapshots of one installation or container (optionally of one database), newest first."""
+        from . import dockerdb
         from .database import ops
 
         inst, ctx = await self._db_prepare(params)
         database = (params or {}).get("database") or None
+        if self._db_module(params) is dockerdb:
+            return {"snapshots": await asyncio.to_thread(dockerdb.list_snapshots, inst["name"], database, ctx.home), "error": None}
         try:
             return {"snapshots": await ops.list_snapshots(inst, ctx, database), "error": None}
         except ops.DbError as exc:

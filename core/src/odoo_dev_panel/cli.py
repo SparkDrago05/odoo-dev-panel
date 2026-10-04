@@ -687,6 +687,9 @@ def cmd_modules(args) -> int:
 def cmd_docker(args) -> int:
     from .discover import docker
 
+    command = getattr(args, "docker_command", None) or "list"
+    if command != "list":
+        return _docker_action(args, command)
     result = docker.discover_docker()
     if args.json:
         _print(result, True)
@@ -707,6 +710,75 @@ def cmd_docker(args) -> int:
                 print(f"    {label:7} {m['container']} = {host}")
         if c["db"]["container"] or c["db"]["host"]:
             print(f"    db      {c['db']['container'] or c['db']['host']}" + (f" as {c['db']['user']}" if c["db"]["user"] else ""))
+    return 0
+
+
+def _docker_target(name: str) -> tuple[dict, list[dict]] | None:
+    from . import dockerops
+    from .discover import docker
+
+    found = docker.discover_docker()
+    if found["error"]:
+        print(f"odp: {found['error']}", file=sys.stderr)
+        return None
+    try:
+        return dockerops.find(found["containers"], name), found["containers"]
+    except dockerops.DockerError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return None
+
+
+def _docker_action(args, command: str) -> int:
+    from . import dockerops
+
+    target = _docker_target(args.container)
+    if target is None:
+        return 2
+    container, everything = target
+    try:
+        if command == "logs":
+            if args.follow:
+                os.execvp("docker", dockerops.logs_argv(container["name"], args.tail, follow=True))
+            text = dockerops.read_logs(container["name"], args.tail)
+            if args.problems:
+                from . import logs
+
+                for g in logs.analyze(text)["groups"]:
+                    print(f"{g['level']:8} x{g['count']:<4} {g['title']}")
+                return 0
+            sys.stdout.write(text)
+            return 0
+        if command == "shell":
+            os.execvp("docker", dockerops.shell_argv(container, args.database))
+        plan = dockerops.plan_action(command, container, everything, database=getattr(args, "db", None),
+                                     update=getattr(args, "update", None), install=getattr(args, "install", None))
+    except dockerops.DockerError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    if args.json and args.plan:
+        _print(plan.as_dict(), True)
+        return 0 if plan.ok else 1
+    print(f"{command} {plan.container}\n\nChecks")
+    for c in plan.checks:
+        print(f"  {c.status.upper():4}  {c.id:12} {c.detail}")
+    print("\nSteps")
+    for step in plan.steps:
+        print(f"  {step.phase}. {step.title}")
+        for line in step.commands:
+            print(f"       $ {line}")
+    if args.plan:
+        return 0 if plan.ok else 1
+    if not plan.ok:
+        print("\nodp: fix the failed checks first", file=sys.stderr)
+        return 1
+    try:
+        asyncio.run(dockerops.run_action(plan, _db_report))
+    except dockerops.DockerError as exc:
+        print(f"odp: {command} failed: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    print(f"{command} done")
     return 0
 
 
@@ -766,16 +838,24 @@ def _db_report(event: dict) -> None:
 
 
 def cmd_db(args) -> int:
+    from . import dockerdb, dockerops
     from .database import context, ops
 
+    docker_root = args.root.startswith("docker:")  # docker:<container>: its database container, same actions
     try:
-        inst, ctx = asyncio.run(context.prepare(args.root))
-    except context.NotFound as exc:
+        if docker_root:
+            inst, ctx = asyncio.run(dockerdb.prepare(args.root[len("docker:"):]))
+            ops = dockerdb  # same interface: plan_db, run_db, DbError
+            ctx.listing_error = ctx.list_error  # type: ignore[attr-defined]
+        else:
+            inst, ctx = asyncio.run(context.prepare(args.root))
+    except (context.NotFound, dockerops.DockerError) as exc:
         print(f"odp: {exc}", file=sys.stderr)
         return 2
     if args.db_command == "snapshots":
         try:
-            snaps = asyncio.run(ops.list_snapshots(inst, ctx, args.database))
+            snaps = dockerdb.list_snapshots(inst["name"], args.database, ctx.home) if docker_root \
+                else asyncio.run(ops.list_snapshots(inst, ctx, args.database))
         except ops.DbError as exc:
             print(f"odp: snapshots could not be listed: {exc}", file=sys.stderr)
             return 1
@@ -946,8 +1026,31 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("b", help="second config file")
     cmp_.add_argument("--json", action="store_true")
 
-    dk = sub.add_parser("docker", help="Odoo containers: image, version, compose project, ports, config and addons mounts (read-only)")
+    dk = sub.add_parser("docker", help="Odoo containers: list (default), start, stop, restart, upgrade, logs, shell")
     dk.add_argument("--json", action="store_true")
+    dsub = dk.add_subparsers(dest="docker_command")
+    dsub.add_parser("list", help="Odoo containers: image, version, compose project, ports, config and addons mounts (read-only)")
+    for name, help_ in (("start", "start a stopped container"), ("stop", "stop a container (clean shutdown, up to 30 s)"),
+                        ("restart", "restart a container")):
+        d = dsub.add_parser(name, help=help_)
+        d.add_argument("container")
+        d.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
+        d.add_argument("--json", action="store_true", help="with --plan: print the plan as JSON")
+    d = dsub.add_parser("upgrade", help="update (-u) or install (-i) modules in a database, inside the container")
+    d.add_argument("container")
+    d.add_argument("--db", "-d", required=True)
+    d.add_argument("--update", "-u", action="append", default=[], help="module to update (repeatable, or comma separated)")
+    d.add_argument("--install", "-i", action="append", default=[], help="module to install (repeatable, or comma separated)")
+    d.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
+    d.add_argument("--json", action="store_true", help="with --plan: print the plan as JSON")
+    d = dsub.add_parser("logs", help="the container's log")
+    d.add_argument("container")
+    d.add_argument("--tail", type=int, default=200, help="last N lines (default 200)")
+    d.add_argument("--follow", "-f", action="store_true")
+    d.add_argument("--problems", "-p", action="store_true", help="print problems grouped by fingerprint instead of the log")
+    d = dsub.add_parser("shell", help="odoo shell in a running container (interactive)")
+    d.add_argument("container")
+    d.add_argument("database")
     mods = sub.add_parser("modules", help="module dependencies from the manifests in a config's addons_path")
     mods.add_argument("config", help="config file")
     mods.add_argument("module", nargs="?", help="focus on one module: what it needs and what needs it")
