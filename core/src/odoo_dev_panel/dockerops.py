@@ -106,7 +106,8 @@ def _db_args(database: str | None) -> list[str]:
 
 
 def plan_action(kind: str, container: dict, all_containers: list[dict], database: str | None = None,
-                update=None, install=None, listening: dict[int, int | None] | None = None) -> ActionPlan:
+                update=None, install=None, listening: dict[int, int | None] | None = None,
+                demo: bool = True) -> ActionPlan:
     """Checks and steps; changes nothing."""
     p = ActionPlan(kind=kind, container=container["name"], version=container["version"])
     if kind not in KINDS:
@@ -133,11 +134,11 @@ def plan_action(kind: str, container: dict, all_containers: list[dict], database
     if kind == "restart":
         p.steps = [Step("restart", 1, "docker", f"Restart {name}", [f"docker restart -t {STOP_SECONDS} {name}"])]
     if kind == "upgrade":
-        _plan_upgrade(p, container, database, update, install)
+        _plan_upgrade(p, container, database, update, install, demo)
     return p
 
 
-def _plan_upgrade(p: ActionPlan, c: dict, database, update, install) -> None:
+def _plan_upgrade(p: ActionPlan, c: dict, database, update, install, demo: bool = True) -> None:
     try:
         p.update, p.install = _names(update, "module"), _names(install, "module")
     except DockerError as exc:
@@ -150,7 +151,8 @@ def _plan_upgrade(p: ActionPlan, c: dict, database, update, install) -> None:
         return
     p.database = database
     args = [*_db_args(database), *(["-u", ",".join(p.update)] if p.update else []),
-            *(["-i", ",".join(p.install)] if p.install else []), "--stop-after-init", "--no-http"]
+            *(["-i", ",".join(p.install)] if p.install else []), "--stop-after-init", "--no-http",
+            *([] if demo or not p.install else ["--without-demo=all"])]
     if c["running"]:
         p.mode, p.argv = "exec", exec_argv(c, *args)
         p.checks.append(Check("mode", OK, f"runs inside the running {c['name']}, next to the server (--no-http: no second web server)"))

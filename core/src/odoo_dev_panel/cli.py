@@ -688,6 +688,8 @@ def cmd_docker(args) -> int:
     from .discover import docker
 
     command = getattr(args, "docker_command", None) or "list"
+    if command in ("new", "delete"):
+        return _docker_stack(args, command)
     if command != "list":
         return _docker_action(args, command)
     result = docker.discover_docker()
@@ -728,6 +730,50 @@ def _docker_target(name: str) -> tuple[dict, list[dict]] | None:
         return None
 
 
+def _docker_stack(args, command: str) -> int:
+    from . import dockerops, dockerprov
+    from .discover import docker
+
+    found = docker.discover_docker()
+    if found["error"]:
+        print(f"odp: {found['error']}", file=sys.stderr)
+        return 1
+    try:
+        plan = (dockerprov.plan_new(args.name, args.version, found["containers"], args.port, args.addons) if command == "new"
+                else dockerprov.plan_delete(args.container, found["containers"], args.confirm))
+    except dockerops.DockerError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    if args.json and args.plan:
+        _print(plan.as_dict(), True)
+        return 0 if plan.ok else 1
+    print(f"{command}\n\nChecks")
+    for c in plan.checks:
+        print(f"  {c.status.upper():4}  {c.id:10} {c.detail}")
+    print("\nSteps")
+    for step in plan.steps:
+        print(f"  {step.phase}. {step.title}")
+        for line in step.commands:
+            print(f"       $ {line}")
+    if args.plan:
+        return 0 if plan.ok else 1
+    if not plan.ok:
+        print("\nodp: fix the failed checks first", file=sys.stderr)
+        return 1
+    try:
+        result = asyncio.run((dockerprov.run_new if command == "new" else dockerprov.run_delete)(plan, _db_report))
+    except dockerops.DockerError as exc:
+        print(f"odp: {command} failed: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    if command == "new":
+        print(f"{result['container']} is up: http://localhost:{result['port']}  (folder {result['folder']})")
+    else:
+        print(f"deleted stack {result['name']}")
+    return 0
+
+
 def _docker_action(args, command: str) -> int:
     from . import dockerops
 
@@ -751,7 +797,8 @@ def _docker_action(args, command: str) -> int:
         if command == "shell":
             os.execvp("docker", dockerops.shell_argv(container, args.database))
         plan = dockerops.plan_action(command, container, everything, database=getattr(args, "db", None),
-                                     update=getattr(args, "update", None), install=getattr(args, "install", None))
+                                     update=getattr(args, "update", None), install=getattr(args, "install", None),
+                                     demo=not getattr(args, "no_demo", False))
     except dockerops.DockerError as exc:
         print(f"odp: {exc}", file=sys.stderr)
         return 1
@@ -1036,11 +1083,24 @@ def build_parser() -> argparse.ArgumentParser:
         d.add_argument("container")
         d.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
         d.add_argument("--json", action="store_true", help="with --plan: print the plan as JSON")
+    d = dsub.add_parser("new", help="create an Odoo stack in Docker (Odoo + PostgreSQL) in ~/odp-docker/NAME")
+    d.add_argument("name")
+    d.add_argument("--version", "-V", default="18.0", help="Odoo version, 15.0 to 20.0 (default 18.0)")
+    d.add_argument("--port", type=int, help="host port on localhost (default: the first free one from 18069)")
+    d.add_argument("--addons", help="absolute path of your addons folder to mount (default: a new empty folder)")
+    d.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
+    d.add_argument("--json", action="store_true", help="with --plan: print the plan as JSON")
+    d = dsub.add_parser("delete", help="delete a stack made by `odp docker new`: containers, volumes and folder")
+    d.add_argument("container")
+    d.add_argument("--confirm", help="type the stack name to confirm")
+    d.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
+    d.add_argument("--json", action="store_true", help="with --plan: print the plan as JSON")
     d = dsub.add_parser("upgrade", help="update (-u) or install (-i) modules in a database, inside the container")
     d.add_argument("container")
     d.add_argument("--db", "-d", required=True)
     d.add_argument("--update", "-u", action="append", default=[], help="module to update (repeatable, or comma separated)")
     d.add_argument("--install", "-i", action="append", default=[], help="module to install (repeatable, or comma separated)")
+    d.add_argument("--no-demo", action="store_true", help="a new database without demo data")
     d.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
     d.add_argument("--json", action="store_true", help="with --plan: print the plan as JSON")
     d = dsub.add_parser("logs", help="the container's log")

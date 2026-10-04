@@ -124,6 +124,10 @@ class Sidecar:
             "docker.plan": self.h_docker_plan,
             "docker.run": self.h_docker_run,
             "docker.logs": self.h_docker_logs,
+            "docker.new_plan": self.h_docker_new_plan,
+            "docker.new_run": self.h_docker_new_run,
+            "docker.delete_plan": self.h_docker_delete_plan,
+            "docker.delete_run": self.h_docker_delete_run,
             "docker.shell": self.h_docker_shell,
             "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
@@ -524,9 +528,78 @@ class Sidecar:
 
     async def h_docker_list(self, params, _conn):
         """Odoo containers, read-only (docker ps and inspect). Its own call: a slow daemon does not slow the scan."""
+        from . import dockerprov
         from .discover import docker
 
-        return await asyncio.to_thread(docker.discover_docker)
+        result = await asyncio.to_thread(docker.discover_docker)
+        for c in result["containers"]:
+            found = dockerprov.stack_of(c)  # a stack this app made: it may delete it
+            c["app_stack"] = found[0] if found else None
+        return {**result, "versions": list(dockerprov.VERSIONS), "stacks_root": dockerprov.stacks_root()}
+
+    async def _docker_new_plan(self, params):
+        from . import dockerprov
+        from .discover import docker
+
+        params = params or {}
+        port, addons = params.get("port"), params.get("addons") or None
+        if port is not None and (not isinstance(port, int) or isinstance(port, bool)):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "port must be a number")
+        if addons is not None and not isinstance(addons, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "addons must be a path")
+        found = await asyncio.to_thread(docker.discover_docker)
+        if found["error"]:
+            raise rpc.RpcError(rpc.CONFLICT, found["error"])
+        return await asyncio.to_thread(dockerprov.plan_new, str(params.get("name") or ""), str(params.get("version") or ""),
+                                       found["containers"], port, addons)
+
+    async def h_docker_new_plan(self, params, _conn):
+        """Dry run of a new Odoo stack in Docker: checks (name, folder, port), steps. Changes nothing."""
+        return (await self._docker_new_plan(params)).as_dict()
+
+    async def h_docker_new_run(self, params, _conn):
+        """Create the stack in the background. Progress arrives as docker.step, the end as docker.finished."""
+        from . import dockerprov
+
+        plan = await self._docker_new_plan(params)
+        if not plan.ok:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c.detail for c in plan.checks if c.status == "fail"))
+
+        async def work(report) -> dict:
+            return await dockerprov.run_new(plan, report)
+
+        run_id = self._start_job("docker", work, {"action": "new", "name": plan.name})
+        return {"run_id": run_id, "name": plan.name}
+
+    async def _docker_delete_plan(self, params):
+        from . import dockerops, dockerprov
+        from .discover import docker
+
+        params = params or {}
+        found = await asyncio.to_thread(docker.discover_docker)
+        if found["error"]:
+            raise rpc.RpcError(rpc.CONFLICT, found["error"])
+        try:
+            return dockerprov.plan_delete(params.get("container"), found["containers"], params.get("confirm") or None)
+        except dockerops.DockerError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_docker_delete_plan(self, params, _conn):
+        """Dry run of deleting a stack this app made. Needs the stack name typed. Changes nothing."""
+        return (await self._docker_delete_plan(params)).as_dict()
+
+    async def h_docker_delete_run(self, params, _conn):
+        from . import dockerprov
+
+        plan = await self._docker_delete_plan(params)
+        if not plan.ok:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c.detail for c in plan.checks if c.status == "fail"))
+
+        async def work(report) -> dict:
+            return await dockerprov.run_delete(plan, report)
+
+        run_id = self._start_job("docker", work, {"action": "delete", "container": plan.container})
+        return {"run_id": run_id, "name": plan.name}
 
     async def _docker_target(self, params):
         from . import dockerops
@@ -548,7 +621,7 @@ class Sidecar:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"action must be one of {', '.join(mod.KINDS)}")
         try:
             return await asyncio.to_thread(mod.plan_action, kind, container, everything, params.get("database") or None,
-                                           params.get("update"), params.get("install"))
+                                           params.get("update"), params.get("install"), None, params.get("demo", True) is not False)
         except mod.DockerError as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
 
