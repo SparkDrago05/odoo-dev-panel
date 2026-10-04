@@ -616,6 +616,49 @@ def _config_set(path: str, snap: dict, assignments: list[str], unset: list[str])
     return 0
 
 
+def cmd_modules(args) -> int:
+    from . import configedit, modules
+    from .discover import scan
+
+    snap = scan.scan(with_databases=False)
+    path = os.path.abspath(args.config)
+    if not any(i["path"] == path for i in snap["instances"]):
+        print(f"odp: {path} is not a discovered Odoo config", file=sys.stderr)
+        return 2
+    try:
+        full = modules.for_config(path, snap, args.module, args.depth)
+    except KeyError as exc:
+        print(f"odp: no module {exc.args[0]} in the addons_path", file=sys.stderr)
+        return 1
+    except (configedit.ConfigError, OSError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print(full, True)
+        return 0
+    if args.module:
+        f = full["focus"]
+        print(f"{f['name']}  {f['module'].get('version', '-')}  {f['module']['path']}")
+        for title, key in (("needs", "needs"), ("needed by (breaks if removed)", "needed_by")):
+            items = sorted(f[key].items(), key=lambda kv: (kv[1], kv[0]))
+            print(f"{title}: " + (", ".join(f"{n}" + (f" ({d})" if d > 1 else "") for n, d in items) or "-"))
+        for mod, deps in f["missing"].items():
+            print(f"MISSING  {mod} needs {', '.join(deps)}")
+    else:
+        for name, m in sorted(full["modules"].items()):
+            print(f"{name:32} depends {len(m['depends']):3}  required by {len(m['required_by']):3}"
+                  + ("" if m["installable"] else "  not installable"))
+        for mod, deps in full["missing"].items():
+            print(f"MISSING  {mod} needs {', '.join(deps)}")
+    for s in full["shadowed"]:
+        print(f"shadowed  {s['path']} (the one in {os.path.dirname(s['by'])} wins)")
+    for p in full["unreadable"]:
+        print(f"unreadable manifest  {p}")
+    for c in full["cycles"]:
+        print("CYCLE  " + " -> ".join(c))
+    return 0
+
+
 def _db_report(event: dict) -> None:
     if event["status"] == "output":
         print(f"    {event['text']}", flush=True)
@@ -785,6 +828,12 @@ def build_parser() -> argparse.ArgumentParser:
             c.add_argument("--unset", action="append", default=[], metavar="KEY",
                            help="remove the option, so Odoo uses its default (repeatable)")
 
+    mods = sub.add_parser("modules", help="module dependencies from the manifests in a config's addons_path")
+    mods.add_argument("config", help="config file")
+    mods.add_argument("module", nargs="?", help="focus on one module: what it needs and what needs it")
+    mods.add_argument("--depth", type=int, help="levels to follow with a focus (default: all)")
+    mods.add_argument("--json", action="store_true")
+
     db = sub.add_parser("db", help="databases of an installation: list, backup, restore, clone, drop, neutralize").add_subparsers(
         dest="db_command", required=True)
     dl = db.add_parser("list", help="databases of the installation's PostgreSQL role, with size and filestore")
@@ -891,6 +940,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_repair_perms(args) if args.repair_command == "config-perms" else cmd_repair_venv(args)
     if args.command == "config":
         return cmd_config(args)
+    if args.command == "modules":
+        return cmd_modules(args)
     if args.command == "db":
         try:
             return cmd_db(args)

@@ -118,6 +118,7 @@ class Sidecar:
             "config.validate": self.h_config_validate,
             "config.form": self.h_config_form,
             "config.save": self.h_config_save,
+            "modules.graph": self.h_modules_graph,
             "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
             "db.plan": self.h_db_plan,
@@ -497,6 +498,21 @@ class Sidecar:
         try:
             return await asyncio.to_thread(configedit.form, text, snap, path, changes)
         except configedit.ConfigError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_modules_graph(self, params, _conn):
+        """Module dependency graph of a config's addons_path; ``module`` and ``depth`` add a focus on one module."""
+        from . import configedit, modules
+
+        path, snap = await self._config(params)
+        name, depth = (params or {}).get("module"), (params or {}).get("depth")
+        if name is not None and not isinstance(name, str) or depth is not None and not isinstance(depth, int):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "module is text, depth is a number")
+        try:
+            return await asyncio.to_thread(modules.for_config, path, snap, name, depth)
+        except KeyError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"no module {exc.args[0]} in the addons_path") from exc
+        except (configedit.ConfigError, OSError) as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
 
     async def h_config_save(self, params, _conn):

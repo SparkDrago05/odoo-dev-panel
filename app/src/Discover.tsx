@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ConfigEditor } from "./ConfigEditor";
+import { Modules } from "./Modules";
 import { rpc } from "./rpc";
 
 type Installation = {
@@ -27,6 +28,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
   const [scanning, setScanning] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ path: string; root: string | null } | null>(null);
+  const [modulesOf, setModulesOf] = useState<string | null>(null);
 
   const scan = useCallback(async () => {
     setScanning(true);
@@ -112,7 +114,10 @@ export default function Discover({ onError }: { onError: (message: string) => vo
                         {configs.map((c) => (
                           <div key={c.path} className="row between">
                             <span>{c.name} <span className="muted">· {c.path}{c.problems.length ? ` · ${c.problems.join("; ")}` : ""}</span></span>
-                            <button onClick={() => setEditing({ path: c.path, root: inst.root })}>Edit</button>
+                            <span>
+                              <button onClick={() => setModulesOf(c.path)}>Modules</button>{" "}
+                              <button onClick={() => setEditing({ path: c.path, root: inst.root })}>Edit</button>
+                            </span>
                           </div>
                         ))}
                       </td>
@@ -134,6 +139,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
           ))}
         </p>
       )}
+      {modulesOf && <Modules path={modulesOf} onClose={() => setModulesOf(null)} />}
       {editing && <ConfigEditor path={editing.path} root={editing.root} onClose={(changed) => { setEditing(null); if (changed) scan(); }} />}
       {snap && snap.missing.length > 0 && <p className="muted">Adopted but not found: {snap.missing.map((m) => m.root).join(", ")}</p>}
       {snap && snap.unreadable.length > 0 && <p className="muted">Could not read (permission): {snap.unreadable.join(", ")}</p>}
