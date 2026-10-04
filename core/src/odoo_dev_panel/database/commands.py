@@ -102,3 +102,27 @@ SUMS_SCRIPT = 'set -e\ncd -- "$1"\nsha256sum -- * > SHA256SUMS.new\nmv SHA256SUM
 CHECK_SUMS_SCRIPT = 'set -e\ncd -- "$1"\nsha256sum -c SHA256SUMS\n'
 # Move $1 to $2 (a name that does not exist); undo with the reverse call.
 MOVE_SCRIPT = 'set -e\n[ ! -e "$2" ]\nmv -T -- "$1" "$2"\n'
+# Snapshots of database $2 in folder $1: keep the newest $3, remove the older ones. Only folders named
+# <db>-YYYYMMDD-HHMMSS whose manifest says snapshot are touched, so a manual backup is never removed.
+PRUNE_SCRIPT = (
+    'set -e\ncd -- "$1"\nn=0\n'
+    'for d in $(printf "%s\\n" "$2"-* | grep -E "^$2-[0-9]{8}-[0-9]{6}\\$" | sort -r || true); do\n'
+    '  grep -q \'"snapshot": true\' "$d/manifest.json" 2>/dev/null || continue\n'
+    '  n=$((n + 1))\n  [ "$n" -le "$3" ] && continue\n'
+    '  rm -rf -- "$d"\n  echo "ODP:pruned $d"\ndone\n'
+)
+# One line per snapshot folder in $1: ODP:snap<TAB>name<TAB>bytes, then its manifest on one line.
+LIST_SNAPSHOTS_SCRIPT = (
+    'cd -- "$1" 2>/dev/null || exit 0\n'
+    'for d in */; do d=${d%/}\n'
+    '  [ -f "$d/manifest.json" ] || continue\n'
+    '  printf "ODP:snap\\t%s\\t%s\\n" "$d" "$(du -sb -- "$d" | cut -f1)"\n'
+    '  tr -d "\\n" < "$d/manifest.json"; echo\ndone\nexit 0\n'
+)
+# Remove the snapshot folder $1, only when its manifest says it is one.
+FORGET_SCRIPT = 'set -e\ngrep -q \'"snapshot": true\' "$1/manifest.json"\nrm -rf -- "$1"\n'
+
+
+def rename_sql(old: str, new: str) -> str:
+    """Both names are validated (``paths.name_error``), never user text."""
+    return f'ALTER DATABASE "{old}" RENAME TO "{new}"'

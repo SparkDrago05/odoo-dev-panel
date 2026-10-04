@@ -124,6 +124,7 @@ class Sidecar:
             "db.list": self.h_db_list,
             "db.plan": self.h_db_plan,
             "db.run": self.h_db_run,
+            "db.snapshots": self.h_db_snapshots,
             "discover.scan": self.h_discover,
             "discover.adopt": self.h_adopt,
             "group.join": self.h_group_join,
@@ -584,7 +585,10 @@ class Sidecar:
         kind = params.get("action")
         if kind not in ops.KINDS:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"action must be one of {', '.join(ops.KINDS)}")
-        return await asyncio.to_thread(ops.plan_db, kind, inst, ctx, **fields)
+        keep = params.get("keep")
+        if keep is not None and (not isinstance(keep, int) or isinstance(keep, bool)):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "keep must be a number")
+        return await asyncio.to_thread(ops.plan_db, kind, inst, ctx, keep=keep, **fields)
 
     async def h_db_plan(self, params, _conn):
         """Dry run of a database action: checks, steps. Changes nothing. The password never leaves the sidecar."""
@@ -603,6 +607,17 @@ class Sidecar:
 
         run_id = self._start_job("db", work, {"root": plan.root, "action": plan.kind, "source": plan.source, "target": plan.target})
         return {"run_id": run_id, "root": plan.root}
+
+    async def h_db_snapshots(self, params, _conn):
+        """Snapshots of one installation (optionally of one database), newest first. Read as the run-as user."""
+        from .database import ops
+
+        inst, ctx = await self._db_prepare(params)
+        database = (params or {}).get("database") or None
+        try:
+            return {"snapshots": await ops.list_snapshots(inst, ctx, database), "error": None}
+        except ops.DbError as exc:
+            return {"snapshots": [], "error": str(exc)}
 
     async def h_discover(self, params, _conn):
         from pathlib import Path

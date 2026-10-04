@@ -45,7 +45,7 @@ Start **Odoo Dev Panel** from the application menu, or `odoo-dev-panel` from a t
 5. **Doctor** runs read-only checks (broken venvs, configs, ports, systemd units, filestores) and offers a repair where one exists.
 6. **Configs:** **Edit** next to a config (Installations panel) opens it with passwords masked, validates it as you type (unknown options, bad ports, missing addons paths, port clashes) and saves it with a backup. **Copy to new config** makes a config for another client from an existing one.
 7. **Modules** and **Compare** (buttons next to **Edit** on each config): **Modules** shows what a module depends on, what requires it, and missing, shadowed or cyclic modules, without importing any code. **Compare** diffs two configs: version, git commit, Python, venv packages, addons paths and options. CLI: `odp modules CONFIG [MODULE]`, `odp compare A B`.
-8. **Databases** backs up, restores, clones (with filestore and an optional neutralization recipe) and drops databases. Every action shows its plan and commands first.
+8. **Databases** backs up, restores, clones (with filestore and an optional neutralization recipe) and drops databases. Every action shows its plan and commands first. **Snapshot** is a backup kept in the run-as user's `~/odp-backups/snapshots`, with only the newest few per database kept (3 by default). **Revert** replaces a database with a snapshot and keeps the replaced database and filestore as `<db>_before_<time>`. In **Run**, tick **Snapshot first** to snapshot before a `-u` upgrade. CLI: `odp db snapshot`, `odp db snapshots`, `odp db revert`, `odp db forget`, `odp start --snapshot`.
 
 ### Config permissions
 

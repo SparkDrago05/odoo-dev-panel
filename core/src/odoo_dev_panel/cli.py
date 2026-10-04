@@ -263,9 +263,16 @@ async def cmd_start(args) -> int:
     }
     planned = run.plan(snap, args.instance, params, set(listening_ports()))
     user = planned.pop("user")
+    if args.snapshot and not (args.update and args.db):
+        print("odp: --snapshot needs --update and --db", file=sys.stderr)
+        return 2
     if args.dry_run:
+        if args.snapshot:
+            print(f"first: snapshot of {args.db}")
         print(f"as {user}: {' '.join(planned['argv'])}")
         return 0
+    if args.snapshot and (code := await _snapshot_first(planned["meta"]["installation"], args.db)):
+        return code
     if args.shell:
         return await _attach_shell(user, planned)
     session = await _with_agent(user, lambda c: c.request("session.start", planned))
@@ -274,6 +281,24 @@ async def cmd_start(args) -> int:
     else:
         port = session["meta"].get("port")
         print(f"started session {session['id']} (pid {session['pid']}) as {user}" + (f", http://localhost:{port}" if port else ""))
+    return 0
+
+
+async def _snapshot_first(root: str, database: str) -> int:
+    """Snapshot before an upgrade: the run starts only when the snapshot is complete."""
+    from .database import context, ops
+
+    inst, ctx = await context.prepare(root)
+    plan = ops.plan_db("snapshot", inst, ctx, source=database)
+    if not plan.ok:
+        print("odp: no snapshot: " + "; ".join(c.detail for c in plan.checks if c.status == "fail"), file=sys.stderr)
+        return 1
+    try:
+        result = await ops.run_db(plan, _db_report)
+    except ops.DbError as exc:
+        print(f"odp: snapshot failed, nothing started: {exc}", file=sys.stderr)
+        return 1
+    print(f"snapshot: {result['backup']}")
     return 0
 
 
@@ -722,6 +747,21 @@ def cmd_db(args) -> int:
     except context.NotFound as exc:
         print(f"odp: {exc}", file=sys.stderr)
         return 2
+    if args.db_command == "snapshots":
+        try:
+            snaps = asyncio.run(ops.list_snapshots(inst, ctx, args.database))
+        except ops.DbError as exc:
+            print(f"odp: snapshots could not be listed: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            _print(snaps, True)
+            return 0
+        for x in snaps:
+            size = f"{x['bytes'] / 1e6:10.1f} MB" if x["bytes"] is not None else " " * 13
+            print(f"{x['database'] or '?':30} {x['created_at'] or '':26} {size}  {x['path']}")
+        if not snaps:
+            print("no snapshots")
+        return 0
     if args.db_command == "list":
         if getattr(ctx, "listing_error", None):
             print(f"odp: databases could not be listed: {ctx.listing_error}", file=sys.stderr)
@@ -738,7 +778,7 @@ def cmd_db(args) -> int:
         kind, inst, ctx, source=getattr(args, "source", None) or getattr(args, "database", None),
         target=getattr(args, "target", None) or getattr(args, "as_name", None), backup=getattr(args, "backup", None),
         dest=getattr(args, "dest", None), recipe=getattr(args, "recipe", None),
-        confirm=getattr(args, "confirm", None),
+        confirm=getattr(args, "confirm", None), keep=getattr(args, "keep", None),
     )
     if args.json and args.plan:
         _print(plan.as_dict(), True)
@@ -756,7 +796,7 @@ def cmd_db(args) -> int:
     if not plan.ok:
         print("\nodp: fix the failed checks first", file=sys.stderr)
         return 1
-    if not args.yes and kind not in ("drop", "neutralize") and input("\nRun now? [y/N] ").strip().lower() != "y":
+    if not args.yes and kind not in ("drop", "neutralize", "revert") and input("\nRun now? [y/N] ").strip().lower() != "y":
         print("cancelled")
         return 1
     try:
@@ -767,9 +807,11 @@ def cmd_db(args) -> int:
     except KeyboardInterrupt:
         return 130
     print(f"{kind} done. Receipt: {result['receipt']}")
-    for key in ("backup", "database", "trash"):
+    for key in ("backup", "database", "trash", "aside", "aside_fs", "removed"):
         if result.get(key):
             print(f"  {key}: {result[key]}")
+    for path in result.get("pruned") or []:
+        print(f"  removed old snapshot: {path}")
     return 0
 
 
@@ -809,6 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--dev", action="append", default=[], help="all, reload, qweb, werkzeug, xml, pdb (repeatable)")
     start.add_argument("--shell", action="store_true", help="interactive odoo-bin shell (needs --db)")
     start.add_argument("--dry-run", action="store_true", help="print the command, start nothing")
+    start.add_argument("--snapshot", action="store_true", help="with --update: snapshot the database first (odp db snapshots)")
     start.add_argument("--arg", dest="extra", action="append", default=[], help="further odoo-bin argument (repeatable)")
 
     ps = sub.add_parser("ps", help="list sessions")
@@ -883,7 +926,7 @@ def build_parser() -> argparse.ArgumentParser:
     mods.add_argument("--depth", type=int, help="levels to follow with a focus (default: all)")
     mods.add_argument("--json", action="store_true")
 
-    db = sub.add_parser("db", help="databases of an installation: list, backup, restore, clone, drop, neutralize").add_subparsers(
+    db = sub.add_parser("db", help="databases of an installation: list, backup, restore, clone, drop, neutralize, snapshots").add_subparsers(
         dest="db_command", required=True)
     dl = db.add_parser("list", help="databases of the installation's PostgreSQL role, with size and filestore")
     dl.add_argument("root", help="installation root, e.g. /opt/odoo17")
@@ -915,6 +958,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("database")
     a.add_argument("--recipe", default="default")
     a.add_argument("--confirm", help="type the database name to confirm")
+    a = db_action("snapshot", "back up a database into the snapshot folder and keep only the newest snapshots of it")
+    a.add_argument("source")
+    a.add_argument("--keep", type=int, help="how many snapshots of this database to keep (default 3)")
+    a = db_action("revert", "replace a database with a snapshot; the current one is kept under a new name")
+    a.add_argument("database")
+    a.add_argument("backup", metavar="SNAPSHOT", help="absolute path of a snapshot folder")
+    a.add_argument("--confirm", help="type the database name to confirm")
+    a = db_action("forget", "remove one snapshot folder")
+    a.add_argument("backup", metavar="SNAPSHOT", help="absolute path of a snapshot folder")
+    ds = db.add_parser("snapshots", help="snapshots of the installation, newest first")
+    ds.add_argument("root", help="installation root, e.g. /opt/odoo17")
+    ds.add_argument("database", nargs="?")
+    ds.add_argument("--json", action="store_true")
 
     provision = sub.add_parser("provision", help="create a new Odoo installation").add_subparsers(
         dest="provision_command", required=True

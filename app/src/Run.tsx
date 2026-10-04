@@ -23,6 +23,8 @@ export default function Run({ agents, onStarted, onError }: {
   const [stopAfterInit, setStopAfterInit] = useState(false);
   const [dev, setDev] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
+  const [snapshot, setSnapshot] = useState(false);
+  const [status, setStatus] = useState("");
 
   useEffect(() => {
     rpc.request<Snapshot>("discover.scan").then(setSnap).catch((e) => onError(String(e.message)));
@@ -46,6 +48,12 @@ export default function Run({ agents, onStarted, onError }: {
     if (!current || !owner) return;
     setStarting(true);
     try {
+      if (!shell && snapshot && update.trim() && db && current.installation) {
+        setStatus(`Snapshot of ${db}…`);
+        const done = await snapshotFirst(current.installation, db);
+        if (!done.ok) throw new Error(`Snapshot failed, nothing started: ${done.error}`);
+        setStatus(`Snapshot: ${done.backup}`);
+      }
       const session = await rpc.request<{ id: string }>("run.start", shell ? { instance: current.path, db, shell: true } : {
         instance: current.path,
         db: db || undefined,
@@ -57,6 +65,7 @@ export default function Run({ agents, onStarted, onError }: {
       });
       onStarted(owner, session.id);
     } catch (e) {
+      setStatus("");
       onError(String((e as Error).message));
     } finally {
       setStarting(false);
@@ -80,6 +89,11 @@ export default function Run({ agents, onStarted, onError }: {
             <input value={update} onChange={(e) => setUpdate(e.target.value)} placeholder="-u modules, comma separated" aria-label="Update modules" />
             <input value={install} onChange={(e) => setInstall(e.target.value)} placeholder="-i modules, comma separated" aria-label="Install modules" />
             <label><input type="checkbox" checked={stopAfterInit} onChange={(e) => setStopAfterInit(e.target.checked)} /> --stop-after-init</label>
+            {update.trim() !== "" && (
+              <label title="Back up the database into the snapshot folder before the upgrade (Databases panel: Revert)">
+                <input type="checkbox" checked={snapshot} onChange={(e) => setSnapshot(e.target.checked)} /> Snapshot first
+              </label>
+            )}
           </div>
           <div className="row">
             <span className="muted">--dev</span>
@@ -96,6 +110,7 @@ export default function Run({ agents, onStarted, onError }: {
               Shell
             </button>
           </div>
+          {status && <p className="muted">{status}</p>}
           {!agentUp && owner && <p className="muted">Unlock the {owner} agent first.</p>}
           {oneShot && !db && <p className="muted">-u and -i need a database.</p>}
           {oneShot && !stopAfterInit && <p className="muted">Without --stop-after-init the server keeps serving after the upgrade.</p>}
@@ -103,4 +118,28 @@ export default function Run({ agents, onStarted, onError }: {
       )}
     </section>
   );
+}
+
+type SnapshotDone = { run_id: string; ok: boolean; error: string | null; backup?: string };
+
+/** Run a database snapshot job and wait for its end. */
+async function snapshotFirst(root: string, database: string): Promise<SnapshotDone> {
+  let runId: string | null = null;
+  let early: SnapshotDone | null = null;
+  let resolve: (d: SnapshotDone) => void = () => {};
+  const finished = new Promise<SnapshotDone>((r) => { resolve = r; });
+  // Listen before the request: the job may finish before the request returns its run_id.
+  const off = rpc.on("db.finished", (e: SnapshotDone) => {
+    if (runId === null) early = e;
+    else if (e.run_id === runId) resolve(e);
+  });
+  try {
+    const r = await rpc.request<{ run_id: string }>("db.run", { root, action: "snapshot", source: database });
+    runId = r.run_id;
+    const pending = early as SnapshotDone | null;
+    if (pending && pending.run_id === runId) return pending;
+    return await finished;
+  } finally {
+    off();
+  }
 }

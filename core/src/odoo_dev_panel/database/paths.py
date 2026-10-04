@@ -36,6 +36,27 @@ def default_dest(home: str | None) -> str | None:
     return os.path.join(home, "odp-backups") if home else None
 
 
+SNAPSHOT_STAMP = re.compile(r"\d{8}-\d{6}")
+SNAPSHOT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}-\d{8}-\d{6}")
+
+
+def snapshot_root(home: str | None) -> str | None:
+    """Snapshots are backups in their own folder, so pruning never touches a manual backup."""
+    return os.path.join(home, "odp-backups", "snapshots") if home else None
+
+
+def is_snapshot_of(path: str, database: str) -> bool:
+    """``path`` is named like a snapshot of ``database``: ``<database>-YYYYMMDD-HHMMSS``."""
+    name = os.path.basename(os.path.normpath(path))
+    return name.startswith(database + "-") and bool(SNAPSHOT_STAMP.fullmatch(name[len(database) + 1:]))
+
+
+def aside_name(database: str, stamp: str) -> str:
+    """Name a database is renamed to when a snapshot replaces it: ``<db>_before_<stamp>``, 63 characters at most."""
+    suffix = "_before_" + stamp.replace("-", "_")
+    return database[:63 - len(suffix)] + suffix
+
+
 def tree_size(path: str) -> int | None:
     """Bytes under ``path``; None when it cannot be read completely."""
     total, failed = 0, []

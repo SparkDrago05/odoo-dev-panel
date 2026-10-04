@@ -250,10 +250,10 @@ class Run(unittest.TestCase):
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines()
 
-    def run_plan(self, kind, fail=None, **kw):
+    def run_plan(self, kind, fail=None, stamp="S", **kw):
         fake_tools(self.t / "bin", self.log, fail)
         ctx = ops.DbContext(databases=[db_row("src", str(self.base / "src"))], conn=CONN, bases=[str(self.base)],
-                            processes=[], agent_running=True, stamp="S")
+                            processes=[], agent_running=True, stamp=stamp)
         p = ops.plan_db(kind, self.inst, ctx, **kw)
         events: list[dict] = []
         env = {"PATH": f"{self.t / 'bin'}:{os.environ['PATH']}"}
@@ -380,3 +380,164 @@ class Run(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+STAMP = "20261004-120000"
+
+
+class Snapshots(unittest.TestCase):
+    """Snapshots: backups in their own folder, pruned per database; revert keeps the current database aside."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.t = Path(self.tmp.name)
+        self.log = self.t / "calls.log"
+        self.log.write_text("")
+        self.base = self.t / "filestore"
+        (self.base / "src").mkdir(parents=True)
+        (self.base / "src" / "a.bin").write_text("x")
+        self.state = self.t / "state"
+        self.inst = {"root": "/opt/odoo17", "owner": ME, "home": str(self.t)}
+        self.snaps = self.t / "odp-backups" / "snapshots"
+
+    def ctx(self, stamp=STAMP, processes=(), extra=()):
+        return ops.DbContext(databases=[db_row("src", str(self.base / "src")), db_row("bad-name", None), *extra],
+                             conn=CONN, bases=[str(self.base)], processes=list(processes), agent_running=True, stamp=stamp)
+
+    def go(self, kind, fail=None, stamp=STAMP, **kw):
+        fake_tools(self.t / "bin", self.log, fail)
+        p = ops.plan_db(kind, self.inst, self.ctx(stamp), **kw)
+        with mock.patch.dict(os.environ, {"PATH": f"{self.t / 'bin'}:{os.environ['PATH']}"}):
+            try:
+                return p, asyncio.run(ops.run_db(p, lambda e: None, self.state)), None
+            except ops.DbError as exc:
+                return p, None, exc
+
+    def calls(self):
+        return self.log.read_text().splitlines()
+
+    def failed(self, p):
+        return {c.id for c in p.checks if c.status == "fail"}
+
+    def fake_snapshot(self, name, snapshot=True, database="src"):
+        d = self.snaps / name
+        d.mkdir(parents=True)
+        (d / "manifest.json").write_text(json.dumps({"database": database, **({"snapshot": True} if snapshot else {})}, indent=2))
+        return d
+
+    def test_pure(self):
+        self.assertTrue(paths.is_snapshot_of(f"/x/src-{STAMP}", "src"))
+        self.assertTrue(paths.is_snapshot_of(f"/x/src-{STAMP}/", "src"))
+        self.assertFalse(paths.is_snapshot_of(f"/x/src2-{STAMP}", "src"))
+        self.assertFalse(paths.is_snapshot_of("/x/src-S", "src"))
+        self.assertEqual(paths.aside_name("src", STAMP), "src_before_20261004_120000")
+        long = paths.aside_name("a" * 63, STAMP)
+        self.assertEqual(len(long), 63)
+        self.assertIsNone(paths.name_error(long))
+        self.assertEqual(paths.snapshot_root("/home/u"), "/home/u/odp-backups/snapshots")
+
+    def test_parse_snapshots(self):
+        lines = ["ODP:snap\tsrc-20261004-120000\t2048", json.dumps({"database": "src", "snapshot": True, "filestore": True}),
+                 "ODP:snap\tsrc-20261004-130000\t10", json.dumps({"database": "src", "snapshot": True}),
+                 "ODP:snap\tmanual\t5", json.dumps({"database": "src"}),
+                 "ODP:snap\tother-20261004-120000\t5", json.dumps({"database": "other", "snapshot": True}),
+                 "ODP:snap\tbroken\t5", "{not json"]
+        got = ops.parse_snapshots("/s", lines)
+        self.assertEqual([g["name"] for g in got], ["src-20261004-130000", "src-20261004-120000", "other-20261004-120000"])
+        self.assertEqual(got[1]["bytes"], 2048)
+        self.assertEqual(got[1]["path"], "/s/src-20261004-120000")
+        self.assertEqual(len(ops.parse_snapshots("/s", lines, "src")), 2)
+
+    def test_snapshot_plan(self):
+        p = ops.plan_db("snapshot", self.inst, self.ctx(), source="src", dest="/elsewhere")
+        self.assertTrue(p.ok, p.checks)
+        self.assertEqual(p.backup, str(self.snaps / f"src-{STAMP}"))
+        self.assertEqual(p.keep, ops.DEFAULT_KEEP)
+        self.assertEqual(p.steps[-1].id, "prune")
+        self.assertIn("source-name", self.failed(ops.plan_db("snapshot", self.inst, self.ctx(), source="bad-name")))
+        self.assertIn("keep", self.failed(ops.plan_db("snapshot", self.inst, self.ctx(), source="src", keep=0)))
+
+    def test_revert_plan(self):
+        snap = str(self.snaps / f"src-{STAMP}")
+        p = ops.plan_db("revert", self.inst, self.ctx(stamp="20261005-090000"), source="src", backup=snap, confirm="src")
+        self.assertTrue(p.ok, [c for c in p.checks if c.status == "fail"])
+        self.assertEqual((p.target, p.aside), ("src", "src_before_20261005_090000"))
+        self.assertEqual(p.filestore_dst, str(self.base / "src"))
+        self.assertEqual(p.aside_fs, str(self.base / "src_before_20261005_090000"))
+        self.assertEqual([s.id for s in p.steps], ["checksums", "rename", "aside-fs", "createdb", "restore", "filestore", "verify"])
+        self.assertIn("confirm", self.failed(ops.plan_db("revert", self.inst, self.ctx(), source="src", backup=snap)))
+        self.assertIn("snapshot", self.failed(ops.plan_db("revert", self.inst, self.ctx(), source="src", confirm="src",
+                                                          backup=str(self.snaps / f"other-{STAMP}"))))
+        running = self.ctx(processes=[{"pid": 7, "installation": "/opt/odoo17", "user": ME}])
+        self.assertIn("not-running", self.failed(ops.plan_db("revert", self.inst, running, source="src", backup=snap, confirm="src")))
+        taken = self.ctx(extra=[db_row(paths.aside_name("src", STAMP), None)])
+        self.assertIn("aside-free", self.failed(ops.plan_db("revert", self.inst, taken, source="src", backup=snap, confirm="src")))
+
+    def test_forget_plan(self):
+        self.assertTrue(ops.plan_db("forget", self.inst, self.ctx(), backup=str(self.snaps / f"src-{STAMP}")).ok)
+        for bad in (str(self.t / "odp-backups" / f"src-{STAMP}"), str(self.snaps / "manual"), str(self.snaps), "rel/x", None):
+            self.assertIn("snapshot", self.failed(ops.plan_db("forget", self.inst, self.ctx(), backup=bad)), bad)
+
+    def test_snapshot_prunes_only_old_snapshots_of_the_same_database(self):
+        old = [self.fake_snapshot(f"src-2026100{i}-000000") for i in (1, 2, 3)]
+        manual = self.fake_snapshot("src-20261001-000001", snapshot=False)
+        other = self.fake_snapshot("other-20261001-000000", database="other")
+        p, result, err = self.go("snapshot", source="src", keep=2)
+        self.assertIsNone(err, err)
+        folder = Path(result["backup"])
+        self.assertTrue(json.loads((folder / "manifest.json").read_text())["snapshot"])
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o750)
+        self.assertEqual(sorted(Path(x).name for x in result["pruned"]), [o.name for o in old[:2]])
+        self.assertTrue(old[2].exists() and manual.exists() and other.exists())
+        self.assertFalse(old[0].exists() or old[1].exists())
+
+    def test_list_snapshots_locally(self):
+        self.fake_snapshot(f"src-{STAMP}")
+        self.fake_snapshot("manual", snapshot=False)
+        got = asyncio.run(ops.list_snapshots(self.inst, self.ctx()))
+        self.assertEqual([g["name"] for g in got], [f"src-{STAMP}"])
+        self.assertEqual(asyncio.run(ops.list_snapshots({**self.inst, "home": str(self.t / "none")}, self.ctx())), [])
+
+    def test_revert_keeps_current_database_aside(self):
+        p, result, err = self.go("snapshot", source="src")
+        snap = result["backup"]
+        (self.base / "src" / "a.bin").write_text("changed after the snapshot")
+        self.log.write_text("")
+        p, result, err = self.go("revert", stamp="20261005-090000", source="src", backup=snap, confirm="src")
+        self.assertIsNone(err, err)
+        aside = "src_before_20261005_090000"
+        self.assertEqual((self.base / "src" / "a.bin").read_text(), "x")
+        self.assertEqual((self.base / aside / "a.bin").read_text(), "changed after the snapshot")
+        calls = self.calls()
+        rename = next(i for i, c in enumerate(calls) if "ALTER DATABASE" in c)
+        create = next(i for i, c in enumerate(calls) if c.startswith("createdb"))
+        self.assertLess(rename, create)
+        self.assertIn(f'RENAME TO "{aside}"', calls[rename])
+        self.assertEqual(result["aside"], aside)
+        self.assertFalse(any(c.startswith("dropdb") for c in calls))
+
+    def test_revert_failure_puts_everything_back(self):
+        p, result, err = self.go("snapshot", source="src")
+        snap = result["backup"]
+        (self.base / "src" / "a.bin").write_text("current")
+        self.log.write_text("")
+        p, result, err = self.go("revert", fail="pg_restore", stamp="20261005-090000", source="src", backup=snap, confirm="src")
+        self.assertIsNotNone(err)
+        self.assertEqual((self.base / "src" / "a.bin").read_text(), "current")
+        self.assertFalse((self.base / "src_before_20261005_090000").exists())
+        calls = self.calls()
+        drop = next(i for i, c in enumerate(calls) if c.startswith("dropdb"))
+        back = next(i for i, c in enumerate(calls) if 'RENAME TO "src"' in c)
+        self.assertIn("--if-exists", calls[drop])
+        self.assertLess(drop, back)
+
+    def test_forget_removes_only_snapshots(self):
+        snap = self.fake_snapshot(f"src-{STAMP}")
+        p, result, err = self.go("forget", backup=str(snap))
+        self.assertIsNone(err, err)
+        self.assertFalse(snap.exists())
+        fake = self.fake_snapshot("src-20261001-000000", snapshot=False)
+        p, result, err = self.go("forget", backup=str(fake))
+        self.assertIsNotNone(err)
+        self.assertTrue(fake.exists())
