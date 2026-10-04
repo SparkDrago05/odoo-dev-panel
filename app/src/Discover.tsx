@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { ConfigEditor } from "./ConfigEditor";
 import { rpc } from "./rpc";
 
 type Installation = {
@@ -25,6 +26,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [scanning, setScanning] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ path: string; root: string | null } | null>(null);
 
   const scan = useCallback(async () => {
     setScanning(true);
@@ -108,8 +110,9 @@ export default function Discover({ onError }: { onError: (message: string) => vo
                           </div>
                         ))}
                         {configs.map((c) => (
-                          <div key={c.path}>
-                            {c.name} <span className="muted">· {c.path}{c.problems.length ? ` · ${c.problems.join("; ")}` : ""}</span>
+                          <div key={c.path} className="row between">
+                            <span>{c.name} <span className="muted">· {c.path}{c.problems.length ? ` · ${c.problems.join("; ")}` : ""}</span></span>
+                            <button onClick={() => setEditing({ path: c.path, root: inst.root })}>Edit</button>
                           </div>
                         ))}
                       </td>
@@ -122,8 +125,16 @@ export default function Discover({ onError }: { onError: (message: string) => vo
         </table>
       )}
       {orphans.length > 0 && (
-        <p className="muted">Orphan configs (no installation): {orphans.map((o) => `${o.path}${o.version_hint ? ` [${o.version_hint}]` : ""}`).join(", ")}</p>
+        <p className="muted">
+          Orphan configs (no installation):{" "}
+          {orphans.map((o) => (
+            <a key={o.path} href="#" onClick={(e) => { e.preventDefault(); setEditing({ path: o.path, root: null }); }}>
+              {o.path}{o.version_hint ? ` [${o.version_hint}]` : ""}{" "}
+            </a>
+          ))}
+        </p>
       )}
+      {editing && <ConfigEditor path={editing.path} root={editing.root} onClose={(changed) => { setEditing(null); if (changed) scan(); }} />}
       {snap && snap.missing.length > 0 && <p className="muted">Adopted but not found: {snap.missing.map((m) => m.root).join(", ")}</p>}
       {snap && snap.unreadable.length > 0 && <p className="muted">Could not read (permission): {snap.unreadable.join(", ")}</p>}
       {snap && snap.units.length > 0 && (

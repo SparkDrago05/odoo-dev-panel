@@ -24,10 +24,10 @@ It also creates the system group `odoo-dev`.
 
 ## 2. Join the `odoo-dev` group
 
-Members of `odoo-dev` can talk to the agents. Add yourself, then **log out and back in** (a new terminal is not enough):
+Members of `odoo-dev` can talk to the agents. When you are not a member, the app says so on start and offers **Add me** (one sudo prompt); it then restarts its core under the new group, so no logout is needed. From a terminal:
 
 ```sh
-sudo usermod -aG odoo-dev "$USER"
+sudo usermod -aG odoo-dev "$USER"     # then log out and back in, or run `newgrp odoo-dev` in that terminal
 ```
 
 The Linux users that run Odoo (for example `odoo17`, or `odoo` for Odoo's own .deb) join the group from the app: the Agents list shows them with an **Enable** button, which runs `sudo usermod -aG odoo-dev <user>` after showing it to you. You do not need this for installations you run as yourself.
@@ -43,7 +43,20 @@ Start **Odoo Dev Panel** from the application menu, or `odoo-dev-panel` from a t
 3. **Unlock** the agent of each run-as user (Agents list). This asks for your sudo password once per user per boot and starts a small agent as that user. The agent starts and stops Odoo without further passwords.
 4. **Run** an instance: pick a config and a database, optionally modules to install or upgrade, and start it. Output goes to a log file and the Output panel. Odoo keeps running when you close the app; only **Stop** ends it.
 5. **Doctor** runs read-only checks (broken venvs, configs, ports, systemd units, filestores) and offers a repair where one exists.
-6. **Databases** backs up, restores, clones (with filestore and an optional neutralization recipe) and drops databases. Every action shows its plan and commands first.
+6. **Configs:** **Edit** next to a config (Installations panel) opens it with passwords masked, validates it as you type (unknown options, bad ports, missing addons paths, port clashes) and saves it with a backup. **Copy to new config** makes a config for another client from an existing one.
+7. **Databases** backs up, restores, clones (with filestore and an optional neutralization recipe) and drops databases. Every action shows its plan and commands first.
+
+### Config permissions
+
+A config holds database and admin passwords. The recommended permissions, which Provision creates and Doctor checks (H10, H13):
+
+| What | Owner | Group | Mode |
+|---|---|---|---|
+| config file | you (the developer) | the run-as user's group | `0640` |
+| config file, when you are the run-as user | you | you | `0600` |
+| folder used by one installation only, e.g. `/etc/odoo/odoo17/` | you | the run-as user's group | `2750` |
+
+You can edit without sudo, Odoo reads through the group, nobody else reads the passwords, and the setgid folder gives new configs the right group. Shared folders such as `/etc/odoo` are never changed. **Fix permissions** (Doctor or the editor), or `odp repair config-perms <root>`, applies this with one reviewed sudo script and keeps the old owners and modes in a receipt.
 
 ### Create a new installation instead
 
@@ -64,6 +77,9 @@ odp ps -u odoo17                             # sessions
 odp logs -u odoo17 <id>
 odp stop -u odoo17 <id>
 odp doctor
+odp repair config-perms /opt/odoo17          # standard permissions for its configs (sudo)
+odp config edit /etc/odoo/odoo17/client.conf # $EDITOR, passwords masked, validated, backup
+odp config copy /etc/odoo/odoo17/client.conf client_b
 odp db list /opt/odoo17
 odp db clone /opt/odoo17 client_db client_db_test --neutralize
 odp provision plan -V 18                     # dry run: checks, steps, root script

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { FixPermissions } from "./ConfigEditor";
 import { rpc } from "./rpc";
 
 type Finding = {
@@ -23,6 +24,7 @@ export default function Doctor({ onError }: { onError: (message: string) => void
   const [running, setRunning] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const [repairRoot, setRepairRoot] = useState<string | null>(null);
+  const [permsRoot, setPermsRoot] = useState<string | null>(null);
 
   const run = async () => {
     setRunning(true);
@@ -62,6 +64,11 @@ export default function Doctor({ onError }: { onError: (message: string) => void
                         Repair
                       </button>
                     )}
+                    {f.repair === "config-perms" && f.installation && (
+                      <button className="primary" onClick={(e) => { e.stopPropagation(); setPermsRoot(f.installation); }}>
+                        Fix permissions
+                      </button>
+                    )}
                   </td>
                 </tr>
                 {open === i && (
@@ -79,6 +86,7 @@ export default function Doctor({ onError }: { onError: (message: string) => void
         </table>
       )}
       {report && report.not_checked.length > 0 && <p className="muted">Not checked: {report.not_checked.join("; ")}</p>}
+      {permsRoot && <FixPermissions root={permsRoot} onClose={(applied) => { setPermsRoot(null); if (applied) run(); }} />}
       {repairRoot && <RepairVenv root={repairRoot} onClose={(changed) => { setRepairRoot(null); if (changed) run(); }} />}
     </section>
   );

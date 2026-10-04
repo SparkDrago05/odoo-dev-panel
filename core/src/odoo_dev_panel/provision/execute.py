@@ -206,13 +206,43 @@ def existing_requirements(spec: ProvisionSpec) -> list[str]:
     return [r for r in plan.requirements_files(spec) if os.path.isfile(r)]
 
 
-def write_receipt(spec: ProvisionSpec, status: str, phase: str) -> None:
+def write_receipt(spec: ProvisionSpec, status: str, phase: str, ledger: dict | None = None) -> str:
+    """``<root>/.odp-provision.json``. ``ledger``: phases completed, and what the root script created or changed.
+    When the root folder is not writable (the root script failed before making it), the receipt goes to the
+    dev user's state folder instead, so a failure is always recorded."""
     data = {
         "tool": "odoo-dev-panel", "status": status, "last_phase": phase,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **(ledger or {}),
         "spec": asdict(spec),
     }
-    Path(spec.receipt_path).write_text(json.dumps(data, indent=2) + "\n")
+    text = json.dumps(data, indent=2) + "\n"
+    try:
+        Path(spec.receipt_path).write_text(text)
+        return spec.receipt_path
+    except OSError:
+        directory = paths.agent_state_dir() / "provision"
+        directory.mkdir(parents=True, exist_ok=True)
+        fallback = directory / f"{spec.run_as}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+        fallback.write_text(text)
+        return str(fallback)
+
+
+def root_ledger_tee(ledger: dict, report: Report) -> Report:
+    """Collect the root script's ODP: lines into ``ledger["root_script"]``; show only the human lines."""
+    root = ledger.setdefault("root_script", {"last_step": None, "created": [], "changed": [], "exit_code": None})
+
+    def tee(event: dict) -> None:
+        text = event.get("text", "")
+        if event.get("status") == "output" and text.startswith("ODP:"):
+            kind, _, value = text[4:].partition(" ")
+            if kind == "step":
+                root["last_step"] = value
+            elif kind in ("created", "changed"):
+                root[kind].append(value)
+            return
+        report(event)
+    return tee
 
 
 async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner = sudo_runner,
@@ -237,18 +267,26 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
     _emit(report, "preflight", "ok")
 
     phase = "root-script"
-    root_created = False
+    ledger: dict = {"completed": []}
+
+    def receipt(status: str, last: str) -> str:
+        return write_receipt(spec, status, last, ledger)
+
+    def done(name: str) -> None:
+        ledger["completed"].append(name)
+        receipt("incomplete", name)
+
     try:
         _emit(report, phase, "start", "Create user, directories, packages, PostgreSQL role and agent")
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "provision-root.sh"
             script.write_text(plan.render_root_script(spec, sec))
             script.chmod(0o600)
-            code = await root_runner(str(script), report)
+            code = await root_runner(str(script), root_ledger_tee(ledger, report))
+        ledger.setdefault("root_script", {"last_step": None, "created": [], "changed": []})["exit_code"] = code
         if code != 0:
             raise ProvisionError(f"root script failed with exit code {code}")
-        root_created = True
-        write_receipt(spec, "incomplete", phase)
+        done(phase)
         _emit(report, phase, "ok")
 
         phase = "clone"
@@ -270,7 +308,7 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
         for repo in spec.custom:
             dest = f"{spec.root}/custom/{repo.name}"
             await fetch_tree(report, phase, dest, "__manifest__.py", clone(repo.url, repo.branch, dest), f"custom repository {repo.name}")
-        write_receipt(spec, "incomplete", phase)
+        done(phase)
         _emit(report, phase, "ok")
 
         phase = "python"
@@ -304,7 +342,7 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
             overrides = pip_overrides_args(spec)
             await run_in_agent(conn, "pip", [uv, "pip", "install", "--python", f"{venv}/bin/python", *overrides, *reqs, *PIP_EXTRA_PACKAGES],
                                spec.root, report, {**uv_env, "CFLAGS": BUILD_CFLAGS})
-            write_receipt(spec, "incomplete", "pip")
+            done("pip")
 
             phase = "config"
             if os.path.exists(spec.conf_path):
@@ -322,14 +360,15 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
             await conn.close()
         await run_local("verify", ["psql", "-h", spec.pg_host, "-p", str(spec.pg_port), "-U", spec.run_as,
                                    "-d", "postgres", "-w", "-tAc", "select 1"], report, {"PGPASSWORD": sec.pg_password})
-        write_receipt(spec, "complete", phase)
+        ledger["completed"].append(phase)
+        receipt("complete", phase)
         _emit(report, phase, "ok")
     except Exception as exc:
-        if root_created:
-            try:
-                write_receipt(spec, "incomplete", f"failed in {phase}")
-            except OSError:
-                pass
+        try:
+            where = receipt("incomplete", f"failed in {phase}")
+            _emit(report, phase, "output", f"receipt: {where}")
+        except OSError:
+            pass
         _emit(report, phase, "fail", str(exc))
         if isinstance(exc, ProvisionError):
             raise

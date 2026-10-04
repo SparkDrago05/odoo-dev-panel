@@ -68,7 +68,17 @@ stat -c '%U:%G %a %n' /opt/odoo$V /opt/odoo$V/odoo /opt/odoo$V/venv /etc/odoo/od
 [ "$(stat -c '%U:%G %a' /opt/odoo$V)" = "dev:odoo$V 2775" ] || fail "root ownership"
 [ "$(stat -c '%U' /opt/odoo$V/venv)" = "odoo$V" ] || fail "venv owner"
 [ "$(stat -c '%a' /etc/odoo/odoo$V/default.conf)" = "640" ] || fail "config mode"
+[ "$(stat -c '%U:%G %a' /etc/odoo/odoo$V)" = "dev:odoo$V 2750" ] || fail "config folder ownership"
 grep -q '"status": "complete"' /opt/odoo$V/.odp-provision.json || fail "receipt not complete"
+python3 - "$V" <<'PY' || fail "receipt ledger"
+import json, sys
+v = sys.argv[1]
+r = json.load(open(f"/opt/odoo{v}/.odp-provision.json"))
+assert r["root_script"]["exit_code"] == 0 and r["root_script"]["last_step"] == "done", r["root_script"]
+assert f"Linux user and group odoo{v}" in r["root_script"]["created"], r["root_script"]
+assert f"PostgreSQL role odoo{v}" not in r["root_script"]["created"], "the orphan role was reused, not created"
+assert r["completed"][-1] == "verify", r["completed"]
+PY
 [ -f /opt/odoo$V/enterprise/web_enterprise/__manifest__.py ] || fail "enterprise archive not extracted/stripped"
 [ -d /opt/odoo$V/custom/server-ux/.git ] || fail "custom repo not cloned"
 grep -q "addons_path = .*enterprise.*custom/server-ux" <(tr -d '\n\t' < /etc/odoo/odoo$V/default.conf) || fail "addons_path"

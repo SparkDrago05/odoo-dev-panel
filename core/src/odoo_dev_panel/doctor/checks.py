@@ -1,7 +1,7 @@
-"""H1-H11: read-only checks over a discovery snapshot. Each check returns Findings; none changes anything.
+"""H1-H11, H13: read-only checks over a discovery snapshot. Each check returns Findings; none changes anything.
 
 Every finding says what is wrong, why it matters (``why``), and what to do: commands to copy (``commands``),
-or ``repair`` when the app can fix it itself (only "venv" so far).
+or ``repair`` when the app can fix it itself ("venv", "config-perms").
 """
 
 from __future__ import annotations
@@ -54,6 +54,9 @@ WHY = {
     "config-secrets-exposed": "These configs hold db_password or admin_passwd and every local user can read "
                               "them. Anyone on the machine can log in to PostgreSQL as the Odoo role or manage "
                               "databases through the database manager.",
+    "config-permissions": "Configs should be owned by you (so you can edit them without sudo), readable by the "
+                          "run-as user's group (so Odoo can read them) and by nobody else (they hold passwords). "
+                          "Their folder should give new configs the run-as group.",
     "filestore-missing": "Odoo keeps attachments, images and assets in the filestore of the OS user that runs "
                          "it. Without it, images and attachments are missing and asset bundles may fail.",
 }
@@ -68,7 +71,7 @@ class Finding:
     title: str
     detail: str = ""
     commands: list[str] = field(default_factory=list)  # suggested; never run by the doctor
-    repair: str | None = None  # "venv": the app can repair it (H12)
+    repair: str | None = None  # "venv" (H12) or "config-perms" (H13): the app can repair it
     installation: str | None = None
 
     @property
@@ -365,10 +368,35 @@ def check_secrets(ctx: Context) -> list[Finding]:
         else:
             commands = [f"sudo chown {q(ctx.dev_user)} {files}", f"sudo chmod 0600 {files}"]
         listed = ", ".join(f"{p} ({m:04o})" for p, m in items)
+        root = next((c["installation"] for c in ctx.snapshot["instances"] if c["path"] == items[0][0]), None)
         out.append(Finding("H10", "config-secrets-exposed", WARNING, items[0][0] if len(items) == 1 else os.path.dirname(items[0][0]),
                            f"{len(items)} config(s) with passwords readable by every user"
                            + (f" (run as {owner})" if owner else " (orphans)"),
-                           listed, commands=commands))
+                           listed, commands=commands, repair="config-perms" if owner and root else None,
+                           installation=root if owner else None))
+    return out
+
+
+# -- H13 ----------------------------------------------------------------------
+
+def check_config_permissions(ctx: Context) -> list[Finding]:
+    from .permissions import PermissionsError, plan_config_perms
+
+    out = []
+    for inst in ctx.snapshot["installations"]:
+        if not inst.get("owner") or not any(i.get("installation") == inst["root"] for i in ctx.snapshot["instances"]):
+            continue
+        try:
+            plan = plan_config_perms(ctx.snapshot, inst["root"], ctx.dev_user)
+        except PermissionsError:
+            continue
+        if not plan.changes:
+            continue
+        listed = "; ".join(f"{c.path}: {c.current} -> {c.target}" for c in plan.changes)
+        out.append(Finding("H13", "config-permissions", WARNING, inst["root"],
+                           f"{len(plan.changes)} config path(s) of {inst['root']} differ from the standard permissions",
+                           listed, commands=[f"sudo {line}" for line in plan.script.splitlines()[3:-1]],
+                           repair="config-perms", installation=inst["root"]))
     return out
 
 
@@ -391,4 +419,4 @@ def check_filestores(ctx: Context) -> list[Finding]:
     return out
 
 
-CHECKS = (check_venv, check_configs, check_git, check_runtime, check_secrets, check_filestores)
+CHECKS = (check_venv, check_configs, check_git, check_runtime, check_secrets, check_filestores, check_config_permissions)

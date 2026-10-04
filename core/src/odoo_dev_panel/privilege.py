@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pwd
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -77,6 +79,40 @@ def start_agent_interactive(user: str) -> int:
         return 1
     print(f"agent started: {status['info']['pid']} {status['info']['socket']}")
     return 0
+
+
+def group_state(group: str = paths.DEFAULT_GROUP) -> dict:
+    """Whether the group exists, the current user is a member (/etc/group) and the membership is active in this
+    process (a new member is active only after a new login, or under ``sg``)."""
+    import grp
+
+    me = pwd.getpwuid(os.getuid())
+    try:
+        entry = grp.getgrnam(group)
+    except KeyError:
+        return {"group": group, "exists": False, "member": False, "active": False}
+    member = me.pw_name in entry.gr_mem or me.pw_gid == entry.gr_gid
+    return {"group": group, "exists": True, "member": member, "active": entry.gr_gid in os.getgroups()}
+
+
+def sg_reexec_argv(argv: list[str], group: str = paths.DEFAULT_GROUP) -> list[str] | None:
+    """``sg <group> -c <argv>`` when the user is a member whose membership is not active yet: the group then applies
+    without a new login. None when nothing is to gain or ``sg`` is missing. ODP_SG=1 marks the re-executed process."""
+    state = group_state(group)
+    sg = shutil.which("sg")
+    if not state["member"] or state["active"] or not sg or os.environ.get("ODP_SG") == "1":
+        return None
+    return [sg, group, "-c", "ODP_SG=1 exec " + shlex.join(argv)]
+
+
+def join_command(askpass: bool) -> list[str]:
+    """Add the current (developer) user to the odoo-dev group."""
+    usermod = shutil.which("usermod") or "/usr/sbin/usermod"
+    return ["sudo", *(["-A"] if askpass else []), "--", usermod, "-aG", paths.DEFAULT_GROUP, pwd.getpwuid(os.getuid()).pw_name]
+
+
+async def join_group_askpass(askpass_env: dict[str, str]) -> tuple[int, str]:
+    return await _sudo_askpass(join_command(askpass=True), askpass_env)
 
 
 def enable_command(user: str, askpass: bool) -> list[str]:

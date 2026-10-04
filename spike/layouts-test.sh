@@ -177,6 +177,42 @@ ls -d /var/lib/odoo/odp-backups/shop_dev-* >/dev/null || fail "system backup fol
 echo "  filestores: ok"
 EOS
 
+    say "config permissions and editor (system layout)"
+    in_c sh -c 'echo "dev ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/odp-test && chmod 0440 /etc/sudoers.d/odp-test'
+    in_c runuser -u dev -- env HOME=/home/dev ODP_EXE=/usr/local/bin/odp bash -se <<'EOS'
+set -eo pipefail
+fail() { echo "  FAIL $*"; exit 1; }
+odp() { /usr/local/bin/odp "$@"; }
+CONF=/etc/odoo/odoo.conf
+[ "$(stat -c '%U:%G %a' $CONF)" = "root:root 644" ] || fail "fixture"
+odp --json doctor --no-databases | python3 -c '
+import json, sys
+f = [x for x in json.load(sys.stdin)["findings"] if x["check"] == "H13" and x["installation"] == "/srv/odoo/18.0"]
+assert f and f[0]["repair"] == "config-perms", f' || fail "doctor H13"
+odp config edit $CONF </dev/null >/dev/null 2>&1 && fail "edit of a root-owned config"
+odp repair config-perms /srv/odoo/18.0 -y >/tmp/perms.out 2>&1 || { cat /tmp/perms.out; fail "repair"; }
+[ "$(stat -c '%U:%G %a' $CONF)" = "dev:odoo 640" ] || fail "perms not applied: $(stat -c '%U:%G %a' $CONF)"
+[ "$(stat -c '%U:%G %a' /etc/odoo)" = "root:root 755" ] || fail "shared /etc/odoo changed"
+ls ~/.local/state/odoo-dev-panel/repairs/*config-perms*.json >/dev/null || fail "no receipt"
+sudo -u odoo cat $CONF >/dev/null || fail "odoo cannot read its config"
+sudo -u nobody cat $CONF >/dev/null 2>&1 && fail "others can read the config"
+odp config show $CONF | grep -q "db_password = False" || fail "show"
+echo "-- edit through \$EDITOR, passwords stay"
+python3 -c 'import sys; p = sys.argv[1]; t = open(p).read().replace("db_password = False", "db_password = s3cret"); f = open(p, "r+"); f.write(t); f.truncate()' $CONF
+odp config show $CONF | grep -q "s3cret" && fail "secret shown without --reveal"
+echo y | EDITOR="sed -i s/8070/8071/" odp config edit $CONF >/tmp/edit.out 2>&1 || { cat /tmp/edit.out; fail "edit"; }
+grep -q "^http_port = 8071" $CONF || fail "edit not saved"
+grep -q "^db_password = s3cret" $CONF || fail "masked secret lost"
+[ "$(stat -c '%U:%G %a' $CONF)" = "dev:odoo 640" ] || fail "edit changed owner or mode"
+B=$(ls ~/.local/state/odoo-dev-panel/config-backups/etc_odoo/odoo.conf.bak-*) || fail "no backup (/etc/odoo is shared: state folder)"
+[ "$(stat -c '%a' $B)" = 600 ] || fail "backup mode"
+grep -q "^http_port = 8070" $B || fail "backup content"
+echo y | EDITOR="sed -i s/8071/99999/" odp config edit $CONF </dev/null >/dev/null 2>&1 && fail "invalid port saved"
+grep -q "^http_port = 8071" $CONF || fail "file changed by a refused edit"
+odp config check $CONF >/dev/null || fail "check"
+echo "  config: ok"
+EOS
+
     if [ "$KEEP" = 1 ]; then echo "  kept $C"; else lxc delete -f "$C" >/dev/null; fi
     say "PASS"
 done

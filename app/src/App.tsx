@@ -37,7 +37,22 @@ const LOG_LIMIT = 400_000;
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r/g;
 
 export default function App() {
-  const [info, setInfo] = useState<{ version: string; user: string } | null>(null);
+  type GroupState = { group: string; exists: boolean; member: boolean; active: boolean };
+  const [info, setInfo] = useState<{ version: string; user: string; group?: GroupState } | null>(null);
+  const [joining, setJoining] = useState(false);
+
+  const joinGroup = async () => {
+    setJoining(true);
+    try {
+      await rpc.request("group.join");
+      await rpc.restart();
+      setInfo(await rpc.request("app.info"));
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setJoining(false);
+    }
+  };
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selected, setSelected] = useState<Session | null>(null);
@@ -139,6 +154,24 @@ export default function App() {
         </span>
         <button className="primary" style={{ marginLeft: "auto" }} onClick={() => setShowProvision(true)}>New installation</button>
       </header>
+
+      {info?.group && !info.group.active && (
+        <div className="error" role="alert">
+          {!info.group.exists ? (
+            <>Group {info.group.group} is missing: the package is not set up. Reinstall it: <code>sudo apt install --reinstall odoo-dev-panel</code></>
+          ) : !info.group.member ? (
+            <>
+              You are not in the {info.group.group} group, so the app cannot talk to the agents.{" "}
+              <button onClick={joinGroup} disabled={joining} title={`Runs: sudo usermod -aG ${info.group.group} ${info.user}`}>
+                {joining ? "Adding…" : "Add me"}
+              </button>{" "}
+              <span className="muted">(one sudo prompt; no logout needed)</span>
+            </>
+          ) : (
+            <>You are in {info.group.group}, but this app session cannot use it yet. Close and reopen the app, or log out and back in.</>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="error" role="alert">
@@ -330,12 +363,18 @@ function PasswordDialog({ request, onDone }: { request: PasswordRequest; onDone:
           onDone(password);
         }}
       >
-        <h2>{request.purpose === "provision" ? "Create installation" : request.purpose === "enable" ? `Enable ${request.user}` : `Unlock ${request.user ?? "agent"}`}</h2>
+        <h2>{request.purpose === "provision" ? "Create installation" : request.purpose === "enable" ? `Enable ${request.user}`
+          : request.purpose === "permissions" ? "Fix config permissions" : request.purpose === "join" ? "Join odoo-dev"
+          : `Unlock ${request.user ?? "agent"}`}</h2>
         <p className="muted">
           {request.purpose === "provision"
             ? `sudo asks for your password once, to run the reviewed script that creates ${request.user}. `
             : request.purpose === "enable"
             ? `sudo asks for your password to run: usermod -aG odoo-dev ${request.user}. `
+            : request.purpose === "join"
+            ? `sudo asks for your password to run: usermod -aG odoo-dev ${request.user}. `
+            : request.purpose === "permissions"
+            ? `sudo asks for your password once, to run the reviewed chown/chmod script for the configs of ${request.user}. `
             : `sudo asks for your password to start the agent as ${request.user}. `}
           It is passed to sudo and not stored.
         </p>

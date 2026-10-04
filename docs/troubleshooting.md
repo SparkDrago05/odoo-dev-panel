@@ -11,7 +11,7 @@ The list shows users with an agent socket, system accounts in `odoo-dev`, and th
 Click **Enable** next to the user, or run `sudo usermod -aG odoo-dev <user>`. Then unlock again.
 
 **"cannot open /run/odoo-dev-panel/<user>.sock: Permission denied".**
-You are not in `odoo-dev` in this session. Run `id -nG`; if `odoo-dev` is missing, log out and back in after `sudo usermod -aG odoo-dev "$USER"`.
+You are not in `odoo-dev`, or not in this session. The app shows a banner with **Add me**; it restarts its core under the group, so no logout is needed. For the CLI: `sudo usermod -aG odoo-dev "$USER"`, then `newgrp odoo-dev` in that terminal or log out and back in.
 
 **Unlock asks for a password and then fails.**
 The password is yours (sudo), not the run-as user's. Your account must be allowed to use `sudo`. The exact command is shown in the dialog; you can run it in a terminal to see the full error: `odp agent start -u <user>`.
@@ -32,6 +32,20 @@ The app picks the config's `http_port`, or the next free port when it is busy. `
 
 **ModuleNotFoundError, or Odoo fails with the wrong Python.**
 The venv is broken, often after a system Python upgrade. Doctor flags it ("venv broken"); **Repair** (or `odp repair venv <root>`) builds a new venv next to the old one, checks it, swaps it in, and keeps the old one as `venv.bak-<time>`.
+
+## Configs
+
+**The editor opens a config read-only.**
+You cannot write the file (often `root:root 0644`). **Fix permissions** gives the installation's configs the standard owner, group and mode with one sudo prompt; see [install.md](install.md#config-permissions).
+
+**"changed since you opened it".**
+Someone or something else wrote the file after you opened it. Reopen it and apply your change again.
+
+**Where is the previous version?**
+Every save first writes `<config>.bak-<time>` (mode `0600`) next to the config, or, when the folder is shared and not yours (`/etc/odoo`), under `~/.local/state/odoo-dev-panel/config-backups/`.
+
+**Copy to new config is refused.**
+The folder is not writable for you. Fix permissions makes a folder that only this installation uses yours; a shared folder such as `/etc/odoo` stays root's, so create configs for that installation elsewhere, for example `/etc/odoo/<run-as user>/`.
 
 ## Databases
 

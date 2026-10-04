@@ -111,11 +111,18 @@ class Sidecar:
             "doctor.run": self.h_doctor,
             "repair.plan": self.h_repair_plan,
             "repair.run": self.h_repair_run,
+            "perms.plan": self.h_perms_plan,
+            "perms.run": self.h_perms_run,
+            "config.open": self.h_config_open,
+            "config.validate": self.h_config_validate,
+            "config.save": self.h_config_save,
+            "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
             "db.plan": self.h_db_plan,
             "db.run": self.h_db_run,
             "discover.scan": self.h_discover,
             "discover.adopt": self.h_adopt,
+            "group.join": self.h_group_join,
             "debug.print": self.h_debug_print,
         }
 
@@ -125,7 +132,25 @@ class Sidecar:
             "user": pwd.getpwuid(os.getuid()).pw_name,
             "socket_dir": str(paths.socket_dir()),
             "pid": os.getpid(),
+            "group": privilege.group_state(),
         }
+
+    async def h_group_join(self, params, _conn):
+        """Add the developer to odoo-dev (one sudo prompt). The app then restarts its sidecar, which takes the
+        group through sg, so no logout is needed."""
+        state = privilege.group_state()
+        if state["member"]:
+            return state
+        if not state["exists"]:
+            raise rpc.RpcError(rpc.CONFLICT, f"group {state['group']} does not exist: reinstall the package")
+        self._unlocking, self._purpose = pwd.getpwuid(os.getuid()).pw_name, "join"
+        try:
+            code, output = await privilege.join_group_askpass({"ODP_ASKPASS_SOCK": self.askpass_path})
+        finally:
+            self._unlocking, self._purpose = None, "unlock"
+        if code != 0:
+            raise rpc.RpcError(rpc.FORBIDDEN, f"could not add you to {state['group']}: {output or f'exit {code}'}")
+        return privilege.group_state()
 
     async def _install_owners(self) -> set[str]:
         """Run-as users of discovered installations, cached for a minute (agents.list is polled)."""
@@ -376,6 +401,103 @@ class Sidecar:
 
         run_id = self._start_job("repair", work, {"root": plan.root, "venv": plan.venv})
         return {"run_id": run_id, "root": plan.root}
+
+    async def _perms_plan(self, params):
+        from .discover import scan
+        from .doctor import permissions
+
+        root = (params or {}).get("root")
+        if not isinstance(root, str) or not root:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "root is required")
+        snap = await asyncio.to_thread(scan.scan, None, False)
+        try:
+            return permissions.plan_config_perms(snap, root)
+        except permissions.PermissionsError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_perms_plan(self, params, _conn):
+        """Dry run of the config permission repair: every path with its current and target owner/group/mode."""
+        return (await self._perms_plan(params)).as_dict()
+
+    async def h_perms_run(self, params, _conn):
+        """Apply the standard config permissions with one sudo call. Progress as repair.step, end as repair.finished."""
+        from .doctor import permissions
+        from .provision import execute
+
+        plan = await self._perms_plan(params)
+
+        async def root_runner(script: str, rep) -> int:
+            self._unlocking, self._purpose = plan.run_as, "permissions"
+            try:
+                return await execute.sudo_runner(script, rep, {"ODP_ASKPASS_SOCK": self.askpass_path})
+            finally:
+                self._unlocking, self._purpose = None, "unlock"
+
+        async def work(report) -> dict:
+            return await permissions.apply_config_perms(plan, report, root_runner)
+
+        run_id = self._start_job("repair", work, {"root": plan.root, "repair": "config-perms"})
+        return {"run_id": run_id, "root": plan.root}
+
+    async def _config(self, params) -> tuple[str, dict]:
+        """Only configs that discovery found can be opened, saved or copied."""
+        from .discover import scan
+
+        path = (params or {}).get("path")
+        if not isinstance(path, str) or not path:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "path is required")
+        snap = await asyncio.to_thread(scan.scan, None, False)
+        if not any(i["path"] == path for i in snap["instances"]):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"{path} is not a discovered Odoo config")
+        return path, snap
+
+    async def h_config_open(self, params, _conn):
+        """Config text with secrets masked (``reveal``: plain), its sha256, access and validation issues."""
+        from . import configedit
+
+        path, snap = await self._config(params)
+        try:
+            return (await asyncio.to_thread(configedit.open_config, path, bool((params or {}).get("reveal")), snap)).as_dict()
+        except configedit.ConfigError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_config_validate(self, params, _conn):
+        from dataclasses import asdict
+
+        from . import configedit
+
+        path, snap = await self._config(params)
+        text = (params or {}).get("text")
+        if not isinstance(text, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "text is required")
+        return [asdict(i) for i in configedit.validate(text, snap, path)]
+
+    async def h_config_save(self, params, _conn):
+        from . import configedit
+
+        path, snap = await self._config(params)
+        text, base = (params or {}).get("text"), (params or {}).get("sha")
+        if not isinstance(text, str) or not isinstance(base, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "text and sha are required")
+        try:
+            return await asyncio.to_thread(configedit.save, path, text, base, snap)
+        except configedit.ConfigError as exc:
+            raise rpc.RpcError(rpc.CONFLICT, str(exc)) from exc
+
+    async def h_config_copy(self, params, _conn):
+        from . import configedit
+
+        path, snap = await self._config(params)
+        name = (params or {}).get("name")
+        if not isinstance(name, str) or not name:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "name is required")
+        inst = next((i for i in snap["instances"] if i["path"] == path), {})
+        owner = next((i.get("owner") for i in snap["installations"] if i["root"] == inst.get("installation")), None)
+        try:
+            return await asyncio.to_thread(configedit.copy, path, name, owner == pwd.getpwuid(os.getuid()).pw_name,
+                                           configedit.copy_folder(path, inst.get("installation")))
+        except configedit.ConfigError as exc:
+            raise rpc.RpcError(rpc.CONFLICT, str(exc)) from exc
 
     async def _db_prepare(self, params):
         from .database import context

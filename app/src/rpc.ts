@@ -34,6 +34,14 @@ class Rpc {
     await invoke("sidecar_start");
   }
 
+  /** New core process, for example after joining the odoo-dev group. Pending requests fail; Odoo keeps running. */
+  async restart() {
+    await this.ready;
+    for (const { reject } of this.pending.values()) reject(new Error("core restarted"));
+    this.pending.clear();
+    await invoke("sidecar_restart");
+  }
+
   private async send(message: Json) {
     await invoke("rpc_send", { message: JSON.stringify(message) });
   }

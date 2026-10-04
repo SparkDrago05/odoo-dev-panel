@@ -94,14 +94,20 @@ RUN_AS={q(spec.run_as)}
 ROOT={q(spec.root)}
 CONF_DIR={q(spec.config_dir)}
 
+# ODP: lines are read by the app for the receipt: every step started, every resource created or changed.
 CREATED=()
+CHANGED=()
+created() {{ CREATED+=("$1"); echo "ODP:created $1"; }}
+changed() {{ CHANGED+=("$1"); echo "ODP:changed $1"; }}
+step() {{ echo "ODP:step $1"; }}
 report() {{
     status=$?
     if [ "$status" -ne 0 ]; then
-        echo "FAILED (exit $status). Resources created before the failure:" >&2
-        if [ "${{#CREATED[@]}}" -eq 0 ]; then echo "  (none)" >&2; fi
+        echo "FAILED (exit $status). Created before the failure:" >&2
+        if [ "${{#CREATED[@]}}" -eq 0 ]; then echo "  (nothing)" >&2; fi
         for item in "${{CREATED[@]}}"; do echo "  - $item" >&2; done
-        echo "Remove them by hand before you retry." >&2
+        for item in "${{CHANGED[@]}}"; do echo "  - changed: $item" >&2; done
+        echo "Fix the cause and run provision again: existing parts are reused. To undo instead, remove them by hand." >&2
     fi
 }}
 trap report EXIT
@@ -117,11 +123,13 @@ fi
 [ -e "$ROOT" ] && echo "note: $ROOT exists: reused, nothing in it is overwritten"
 [ "$ROLE_EXISTS" = 1 ] && echo "note: PostgreSQL role $RUN_AS exists: reused, its password is set to the one in the config"
 
+step packages
 echo "== System packages for building Odoo's Python dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends {packages}
 
+step user
 echo "== Linux user and group"
 ROOT_NEW=0
 if [ "$USER_EXISTS" = 0 ]; then
@@ -132,11 +140,12 @@ if [ "$USER_EXISTS" = 0 ]; then
         useradd --system --user-group --create-home --home-dir "$ROOT" --shell /bin/bash "$RUN_AS"
         ROOT_NEW=1
     fi
-    CREATED+=("Linux user and group $RUN_AS")
+    created "Linux user and group $RUN_AS"
 fi
-usermod -aG {GROUP} "$RUN_AS"
-usermod -aG "$RUN_AS" "$DEV"
+if ! id -nG "$RUN_AS" | tr ' ' '\n' | grep -qx {GROUP}; then usermod -aG {GROUP} "$RUN_AS"; changed "$RUN_AS added to group {GROUP}"; fi
+if ! id -nG "$DEV" | tr ' ' '\n' | grep -qx "$RUN_AS"; then usermod -aG "$RUN_AS" "$DEV"; changed "$DEV added to group $RUN_AS"; fi
 
+step directories
 echo "== Directories (owner: $DEV, group: $RUN_AS, setgid, group-writable)"
 if [ "$ROOT_NEW" = 1 ]; then
     # useradd created it owned by the new user: hand it to the dev user (group-writable, setgid)
@@ -144,26 +153,31 @@ if [ "$ROOT_NEW" = 1 ]; then
     chmod 2775 "$ROOT"
 elif [ ! -e "$ROOT" ]; then
     install -d -m 2775 -o "$DEV" -g "$RUN_AS" "$ROOT"
-    CREATED+=("directory $ROOT")
+    created "directory $ROOT"
 fi
-for d in "$ROOT/odoo" "$ROOT/enterprise" "$ROOT/custom" "$CONF_DIR"; do
-    if [ ! -e "$d" ]; then install -d -m 2775 -o "$DEV" -g "$RUN_AS" "$d"; CREATED+=("directory $d"); fi
+for d in "$ROOT/odoo" "$ROOT/enterprise" "$ROOT/custom"; do
+    if [ ! -e "$d" ]; then install -d -m 2775 -o "$DEV" -g "$RUN_AS" "$d"; created "directory $d"; fi
 done
+# Configs hold passwords: readable by the run-as group only; setgid gives new configs that group.
+if [ ! -e "$CONF_DIR" ]; then install -d -m 2750 -o "$DEV" -g "$RUN_AS" "$CONF_DIR"; created "directory $CONF_DIR"; fi
 # Shared uv Pythons: a Python installed by one version user with umask 022 is read-only for the others.
 if [ -d {q(spec.python_dir)} ]; then chmod -R g+rwX {q(spec.python_dir)}; fi
 
+step role
 echo "== PostgreSQL role $RUN_AS"
 if [ "$ROLE_EXISTS" = 1 ]; then
     runuser -u postgres -- psql -v ON_ERROR_STOP=1 -X -q <<'SQL'
 {alter_sql}
 SQL
+    changed "password of PostgreSQL role $RUN_AS set to the one in the config"
 else
     runuser -u postgres -- psql -v ON_ERROR_STOP=1 -X -q <<'SQL'
 {role_sql}
 SQL
-    CREATED+=("PostgreSQL role $RUN_AS")
+    created "PostgreSQL role $RUN_AS"
 fi
 
+step agent
 echo "== Agent of $RUN_AS (keeps running without sudo afterwards)"
 # Ask the agent itself: its systemd unit can stay "running" after the agent ended, because
 # KillMode=process leaves the Odoo processes in it.
@@ -178,6 +192,7 @@ else
     runuser -u "$RUN_AS" -- {odp} agent serve --socket-dir {q(str(paths.socket_dir()))}
 fi
 
+step done
 echo "== Done"
 """
 

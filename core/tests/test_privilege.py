@@ -62,3 +62,35 @@ class CandidateUsersTest(unittest.TestCase):
             f.flush()
             self.assertEqual(client._uid_min(f.name), 2000)
         self.assertEqual(client._uid_min("/nonexistent/login.defs"), 1000)
+
+
+class GroupJoinTest(unittest.TestCase):
+    def _state(self, member, active):
+        from odoo_dev_panel import privilege
+
+        return mock.patch.object(privilege, "group_state", return_value={"group": "odoo-dev", "exists": True,
+                                                                          "member": member, "active": active})
+
+    def test_sg_only_for_a_new_member_whose_group_is_not_active(self):
+        from odoo_dev_panel import privilege
+
+        with self._state(True, False), mock.patch.object(privilege.shutil, "which", return_value="/usr/bin/sg"), \
+                mock.patch.dict(privilege.os.environ, {}, clear=False):
+            privilege.os.environ.pop("ODP_SG", None)
+            argv = privilege.sg_reexec_argv(["/usr/bin/odp", "sidecar"])
+        self.assertEqual(argv[:3], ["/usr/bin/sg", "odoo-dev", "-c"])
+        self.assertEqual(argv[3], "ODP_SG=1 exec /usr/bin/odp sidecar")
+        for member, active in ((False, False), (True, True)):
+            with self._state(member, active):
+                self.assertIsNone(privilege.sg_reexec_argv(["odp", "sidecar"]))
+        with self._state(True, False), mock.patch.dict(privilege.os.environ, {"ODP_SG": "1"}):
+            self.assertIsNone(privilege.sg_reexec_argv(["odp", "sidecar"]), "no loop after the re-exec")
+
+    def test_join_command_adds_the_current_user(self):
+        import pwd
+
+        from odoo_dev_panel import privilege
+
+        cmd = privilege.join_command(askpass=True)
+        self.assertEqual(cmd[:3], ["sudo", "-A", "--"])
+        self.assertEqual(cmd[-3:], ["-aG", "odoo-dev", pwd.getpwuid(privilege.os.getuid()).pw_name])

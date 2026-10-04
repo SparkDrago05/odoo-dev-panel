@@ -99,6 +99,31 @@ class FilesTest(unittest.TestCase):
             self.assertNotIn("password", text.lower())
 
 
+class LedgerTest(unittest.TestCase):
+    def test_root_script_lines_go_to_the_ledger_not_the_log(self):
+        ledger, shown = {}, []
+        tee = execute.root_ledger_tee(ledger, shown.append)
+        for text in ("ODP:step user", "== Linux user and group", "ODP:created Linux user and group odoo17",
+                     "ODP:changed spark added to group odoo17", "ODP:step role"):
+            tee({"step": "root-script", "status": "output", "text": text})
+        self.assertEqual([e["text"] for e in shown], ["== Linux user and group"])
+        self.assertEqual(ledger["root_script"]["last_step"], "role")
+        self.assertEqual(ledger["root_script"]["created"], ["Linux user and group odoo17"])
+        self.assertEqual(ledger["root_script"]["changed"], ["spark added to group odoo17"])
+
+    def test_receipt_falls_back_to_the_state_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = ProvisionSpec(version=17, dev_user="alice", root=f"{tmp}/missing/odoo17")
+            os.environ["ODP_STATE_DIR"] = f"{tmp}/state"
+            try:
+                where = execute.write_receipt(spec, "incomplete", "failed in root-script",
+                                              {"completed": [], "root_script": {"created": ["directory x"]}})
+            finally:
+                del os.environ["ODP_STATE_DIR"]
+            self.assertTrue(where.startswith(f"{tmp}/state/provision/odoo17-"))
+            self.assertIn("directory x", Path(where).read_text())
+
+
 class ReuseTest(unittest.TestCase):
     def test_read_conf_password(self):
         with tempfile.TemporaryDirectory() as tmp:

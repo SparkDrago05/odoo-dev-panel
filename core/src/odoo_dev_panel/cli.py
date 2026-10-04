@@ -6,6 +6,8 @@ import argparse
 import asyncio
 import json
 import os
+import pwd
+import shlex
 import sys
 
 from . import __version__, client, paths, privilege, rpc
@@ -425,6 +427,135 @@ def cmd_repair_venv(args) -> int:
     return 0
 
 
+def cmd_repair_perms(args) -> int:
+    from .discover import scan
+    from .doctor import permissions
+    from .provision import execute
+
+    try:
+        plan = permissions.plan_config_perms(scan.scan(with_databases=False), args.root)
+    except permissions.PermissionsError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    if args.json and args.plan:
+        _print(plan.as_dict(), True)
+        return 0
+    print(f"Standard permissions for the configs of {plan.root} (run as {plan.run_as}, edited by {plan.dev_user})\n")
+    for c in plan.changes:
+        print(f"  {c.kind:6} {c.path}\n         {c.current}  ->  {c.target}")
+    for path in plan.kept:
+        print(f"  ok     {path}")
+    for note in plan.notes:
+        print(f"  note   {note}")
+    if not plan.changes:
+        print("\nNothing to change.")
+        return 0
+    print("\nRoot script (one sudo call):\n" + plan.script)
+    if args.plan:
+        return 0
+    if not args.yes and input("Apply? [y/N] ").strip().lower() != "y":
+        print("cancelled")
+        return 1
+
+    async def root_runner(script: str, report) -> int:
+        return await execute.sudo_runner(script, report)
+
+    try:
+        result = asyncio.run(permissions.apply_config_perms(plan, _db_report, root_runner))
+    except permissions.PermissionsError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    print(f"{result['changed']} path(s) changed. Receipt with the old values: {result['receipt']}")
+    return 0
+
+
+def _read_text(path: str) -> str:
+    with open(path) as fh:
+        return fh.read()
+
+
+def cmd_config(args) -> int:
+    from . import configedit
+    from .discover import scan
+
+    snap = scan.scan(with_databases=False)
+    path = os.path.abspath(args.path)
+    inst = next((i for i in snap["instances"] if i["path"] == path), None)
+    if inst is None:
+        print(f"odp: {path} is not a discovered Odoo config", file=sys.stderr)
+        return 2
+    try:
+        if args.config_command == "show":
+            opened = configedit.open_config(path, args.reveal, snap)
+            sys.stdout.write(opened.text)
+            return 0
+        if args.config_command == "check":
+            issues = configedit.validate(_read_text(path), snap, path)
+            if args.json:
+                _print([vars(i) for i in issues], True)
+            for i in issues if not args.json else []:
+                print(f"{i.level.upper():7} {i.key or '-':18} {i.text}")
+            if not issues and not args.json:
+                print("ok")
+            return 1 if any(i.level == "error" for i in issues) else 0
+        if args.config_command == "copy":
+            owner = next((i.get("owner") for i in snap["installations"] if i["root"] == inst.get("installation")), None)
+            result = configedit.copy(path, args.name, owner == pwd.getpwuid(os.getuid()).pw_name,
+                                     configedit.copy_folder(path, inst.get("installation")))
+            print(result["path"])
+            if result["warning"]:
+                print(f"warning: {result['warning']}", file=sys.stderr)
+            return 0
+        if args.config_command == "edit":
+            return _config_edit(path, snap)
+    except configedit.ConfigError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    return 2
+
+
+def _config_edit(path: str, snap: dict) -> int:
+    """$EDITOR on a private copy with secrets masked; validated and saved with a backup."""
+    import subprocess
+    import tempfile
+
+    from . import configedit
+
+    opened = configedit.open_config(path, False, snap)
+    if not opened.access.writable:
+        print(f"odp: you cannot write {path} ({opened.access.owner}:{opened.access.group} {opened.access.mode}). "
+              "Run: odp repair config-perms <installation root>", file=sys.stderr)
+        return 1
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+    with tempfile.TemporaryDirectory(prefix="odp-config-") as tmp:
+        work = os.path.join(tmp, os.path.basename(path))
+        with open(os.open(work, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as fh:
+            fh.write(opened.text)
+        while True:
+            if subprocess.call([*shlex.split(editor), work]) != 0:
+                print("odp: editor failed; nothing saved", file=sys.stderr)
+                return 1
+            text = _read_text(work)
+            issues = configedit.validate(configedit.unmask(text, _read_text(path)), snap, path)
+            for i in issues:
+                print(f"{i.level.upper():7} {i.key or '-':18} {i.text}")
+            errors = [i for i in issues if i.level == "error"]
+            try:
+                answer = input("Fix errors in the editor? [Y/n] " if errors else "Save? [y/N/e(dit again)] ").strip().lower()
+            except EOFError:  # no terminal: never save on a guess
+                answer = "n"
+            if errors and answer in ("", "y"):
+                continue
+            if errors or answer != "y":
+                if answer == "e":
+                    continue
+                print("not saved")
+                return 1
+            result = configedit.save(path, text, opened.sha, snap)
+            print(f"saved; previous version in {result['backup']}" if result["changed"] else "no change")
+            return 0
+
+
 def _db_report(event: dict) -> None:
     if event["status"] == "output":
         print(f"    {event['text']}", flush=True)
@@ -569,6 +700,22 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--plan", action="store_true", help="dry run: checks and steps. Changes nothing")
     rv.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
 
+    rp = repair.add_parser("config-perms", help="give the configs of an installation the standard owner, group and mode")
+    rp.add_argument("root", help="installation root, e.g. /opt/odoo17")
+    rp.add_argument("--plan", action="store_true", help="dry run: show every change and the root script")
+    rp.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
+
+    config = sub.add_parser("config", help="show, check, edit or copy a discovered Odoo config").add_subparsers(
+        dest="config_command", required=True)
+    for name, help_ in (("show", "print the config, passwords masked"), ("check", "validate the config"),
+                        ("edit", "edit in $EDITOR, validate, save with a backup"), ("copy", "new config next to it")):
+        c = config.add_parser(name, help=help_)
+        c.add_argument("path", help="config file")
+        if name == "show":
+            c.add_argument("--reveal", action="store_true", help="show the passwords too")
+        if name == "copy":
+            c.add_argument("name", help="new config name, e.g. client_b")
+
     db = sub.add_parser("db", help="databases of an installation: list, backup, restore, clone, drop, neutralize").add_subparsers(
         dest="db_command", required=True)
     dl = db.add_parser("list", help="databases of the installation's PostgreSQL role, with size and filestore")
@@ -647,6 +794,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sidecar":
         from . import sidecar
 
+        # Added to odoo-dev but not logged in again: take the group through sg instead of asking for a logout.
+        again = privilege.sg_reexec_argv([*paths.odp_command(), "sidecar"])
+        if again:
+            os.execv(again[0], again)
         return sidecar.main()
     if args.command == "agent" and args.agent_command == "serve":
         from .agent import server
@@ -668,7 +819,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         return cmd_doctor(args)
     if args.command == "repair":
-        return cmd_repair_venv(args)
+        return cmd_repair_perms(args) if args.repair_command == "config-perms" else cmd_repair_venv(args)
+    if args.command == "config":
+        return cmd_config(args)
     if args.command == "db":
         try:
             return cmd_db(args)

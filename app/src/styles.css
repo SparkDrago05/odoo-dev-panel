@@ -67,3 +67,4 @@ code.command { display: block; margin: 8px 0; padding: 6px 8px; background: var(
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
 pre.script { margin: 6px 0; padding: 8px; max-height: 260px; overflow: auto; background: var(--code-bg); border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
 pre.script.tall { height: 360px; max-height: none; }
+textarea.config { width: 100%; box-sizing: border-box; font: 12px/1.45 ui-monospace, monospace; background: var(--code-bg); white-space: pre; overflow: auto; }

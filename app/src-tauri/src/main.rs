@@ -7,10 +7,11 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const INSTALLED_ODP: &str = "/usr/lib/odoo-dev-panel/bin/odp";
 
@@ -18,6 +19,8 @@ const INSTALLED_ODP: &str = "/usr/lib/odoo-dev-panel/bin/odp";
 struct Sidecar {
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Option<Child>>,
+    // Bumped on every spawn: the reader of a replaced core must not report its exit as the current one's.
+    generation: AtomicU64,
 }
 
 fn odp_executable() -> String {
@@ -25,7 +28,13 @@ fn odp_executable() -> String {
 }
 
 /// Read Content-Length framed messages until EOF and forward each body as an "rpc" event.
-fn pump(app: AppHandle, stdout: impl Read) {
+fn exited(app: &AppHandle, generation: u64) {
+    if app.state::<Sidecar>().generation.load(Ordering::SeqCst) == generation {
+        let _ = app.emit("sidecar-exit", ());
+    }
+}
+
+fn pump(app: AppHandle, stdout: impl Read, generation: u64) {
     let mut reader = BufReader::new(stdout);
     loop {
         let mut length: Option<usize> = None;
@@ -33,7 +42,7 @@ fn pump(app: AppHandle, stdout: impl Read) {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => {
-                    let _ = app.emit("sidecar-exit", ());
+                    exited(&app, generation);
                     return;
                 }
                 Ok(_) => {}
@@ -51,7 +60,7 @@ fn pump(app: AppHandle, stdout: impl Read) {
         let Some(length) = length else { continue };
         let mut body = vec![0u8; length];
         if reader.read_exact(&mut body).is_err() {
-            let _ = app.emit("sidecar-exit", ());
+            exited(&app, generation);
             return;
         }
         let _ = app.emit("rpc", String::from_utf8_lossy(&body).into_owned());
@@ -66,6 +75,23 @@ fn sidecar_start(app: AppHandle, state: State<Sidecar>) -> Result<(), String> {
             return Ok(()); // already running (for example after a web view reload)
         }
     }
+    spawn_sidecar(app, &state, &mut child_slot)
+}
+
+/// Stop the core and start a new one, for example after the user joined the odoo-dev group: the new core
+/// takes the group through `sg`. Agents and Odoo processes do not depend on the core and keep running.
+#[tauri::command]
+fn sidecar_restart(app: AppHandle, state: State<Sidecar>) -> Result<(), String> {
+    let mut child_slot = state.child.lock().unwrap();
+    *state.stdin.lock().unwrap() = None;
+    if let Some(mut child) = child_slot.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    spawn_sidecar(app, &state, &mut child_slot)
+}
+
+fn spawn_sidecar(app: AppHandle, state: &State<Sidecar>, child_slot: &mut Option<Child>) -> Result<(), String> {
     let exe = odp_executable();
     let mut child = Command::new(&exe)
         .arg("sidecar")
@@ -77,7 +103,8 @@ fn sidecar_start(app: AppHandle, state: State<Sidecar>) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("no sidecar stdout")?;
     *state.stdin.lock().unwrap() = child.stdin.take();
     *child_slot = Some(child);
-    thread::spawn(move || pump(app, stdout));
+    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    thread::spawn(move || pump(app, stdout, generation));
     Ok(())
 }
 
@@ -94,9 +121,14 @@ fn rpc_send(state: State<Sidecar>, message: String) -> Result<(), String> {
 }
 
 fn main() {
+    // WebKitGTK's DMA-BUF renderer leaves blank or stale areas on some Wayland + NVIDIA (hybrid) machines.
+    // This app draws only forms and tables, so the slower path costs nothing visible. Set the variable to 0 to opt out.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     tauri::Builder::default()
         .manage(Sidecar::default())
-        .invoke_handler(tauri::generate_handler![sidecar_start, rpc_send])
+        .invoke_handler(tauri::generate_handler![sidecar_start, sidecar_restart, rpc_send])
         .run(tauri::generate_context!())
         .expect("error while running Odoo Dev Panel");
 }
