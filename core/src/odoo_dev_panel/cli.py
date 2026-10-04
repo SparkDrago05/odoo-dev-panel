@@ -659,6 +659,50 @@ def cmd_modules(args) -> int:
     return 0
 
 
+def cmd_compare(args) -> int:
+    from . import compare
+    from .discover import scan
+
+    snap = scan.scan(with_databases=False)
+    paths = [os.path.abspath(p) for p in (args.a, args.b)]
+    for p in paths:
+        if not any(i["path"] == p for i in snap["instances"]):
+            print(f"odp: {p} is not a discovered Odoo config", file=sys.stderr)
+            return 2
+    result = compare.compare(paths[0], paths[1], snap)
+    if args.json:
+        _print(result, True)
+        return 0 if _same(result) else 1
+    a, b = result["a"], result["b"]
+    print(f"A  {a['name']}  {a['path']}\nB  {b['name']}  {b['path']}")
+    for n in a["notes"] + b["notes"]:
+        print(f"note: {n}")
+    for f in result["facts"]:
+        print(f"{'  ' if f['same'] else '! '}{f['key']:10} {f['a'] if f['a'] is not None else '-'}" + ("" if f["same"] else f"  ->  {f['b'] if f['b'] is not None else '-'}"))
+    for e in result["addons"]["only_a"]:
+        print(f"addons_path only in A: {e}")
+    for e in result["addons"]["only_b"]:
+        print(f"addons_path only in B: {e}")
+    for title, section in (("package", result["packages"]), ("option", result["options"])):
+        if section is None:
+            print(f"{title}s: not compared (no readable venv on one side)")
+            continue
+        for k, v in section["only_a"].items():
+            print(f"{title} only in A: {k} {v}")
+        for k, v in section["only_b"].items():
+            print(f"{title} only in B: {k} {v}")
+        for k, (x, y) in section["changed"].items():
+            dim = "  (expected)" if title == "option" and k in result["expected"] else ""
+            print(f"{title} differs: {k}  {x} -> {y}{dim}")
+    return 0 if _same(result) else 1
+
+
+def _same(r: dict) -> bool:
+    sections = [s for s in (r["packages"], r["options"]) if s]
+    return all(f["same"] for f in r["facts"]) and not r["addons"]["only_a"] and not r["addons"]["only_b"] and \
+        all(not (s["only_a"] or s["only_b"] or s["changed"]) for s in sections)
+
+
 def _db_report(event: dict) -> None:
     if event["status"] == "output":
         print(f"    {event['text']}", flush=True)
@@ -828,6 +872,11 @@ def build_parser() -> argparse.ArgumentParser:
             c.add_argument("--unset", action="append", default=[], metavar="KEY",
                            help="remove the option, so Odoo uses its default (repeatable)")
 
+    cmp_ = sub.add_parser("compare", help="how two configs differ: Odoo version and commit, Python, packages, addons_path, options")
+    cmp_.add_argument("a", help="first config file")
+    cmp_.add_argument("b", help="second config file")
+    cmp_.add_argument("--json", action="store_true")
+
     mods = sub.add_parser("modules", help="module dependencies from the manifests in a config's addons_path")
     mods.add_argument("config", help="config file")
     mods.add_argument("module", nargs="?", help="focus on one module: what it needs and what needs it")
@@ -940,6 +989,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_repair_perms(args) if args.repair_command == "config-perms" else cmd_repair_venv(args)
     if args.command == "config":
         return cmd_config(args)
+    if args.command == "compare":
+        return cmd_compare(args)
     if args.command == "modules":
         return cmd_modules(args)
     if args.command == "db":

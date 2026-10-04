@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { Compare } from "./Compare";
 import { ConfigEditor } from "./ConfigEditor";
 import { Modules } from "./Modules";
 import { rpc } from "./rpc";
@@ -28,6 +29,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
   const [scanning, setScanning] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ path: string; root: string | null } | null>(null);
+  const [compareOf, setCompareOf] = useState<string | null>(null);
   const [modulesOf, setModulesOf] = useState<string | null>(null);
 
   const scan = useCallback(async () => {
@@ -116,6 +118,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
                             <span>{c.name} <span className="muted">· {c.path}{c.problems.length ? ` · ${c.problems.join("; ")}` : ""}</span></span>
                             <span>
                               <button onClick={() => setModulesOf(c.path)}>Modules</button>{" "}
+                              <button disabled={snap.instances.length < 2} onClick={() => setCompareOf(c.path)}>Compare</button>{" "}
                               <button onClick={() => setEditing({ path: c.path, root: inst.root })}>Edit</button>
                             </span>
                           </div>
@@ -139,6 +142,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
           ))}
         </p>
       )}
+      {compareOf && snap && <Compare path={compareOf} configs={snap.instances} onClose={() => setCompareOf(null)} />}
       {modulesOf && <Modules path={modulesOf} onClose={() => setModulesOf(null)} />}
       {editing && <ConfigEditor path={editing.path} root={editing.root} onClose={(changed) => { setEditing(null); if (changed) scan(); }} />}
       {snap && snap.missing.length > 0 && <p className="muted">Adopted but not found: {snap.missing.map((m) => m.root).join(", ")}</p>}

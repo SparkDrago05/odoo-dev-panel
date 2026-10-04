@@ -119,6 +119,7 @@ class Sidecar:
             "config.form": self.h_config_form,
             "config.save": self.h_config_save,
             "modules.graph": self.h_modules_graph,
+            "compare.run": self.h_compare,
             "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
             "db.plan": self.h_db_plan,
@@ -514,6 +515,16 @@ class Sidecar:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"no module {exc.args[0]} in the addons_path") from exc
         except (configedit.ConfigError, OSError) as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_compare(self, params, _conn):
+        """Difference between two discovered configs (``path`` and ``other``): facts, packages, addons_path, options."""
+        from . import compare
+
+        path, snap = await self._config(params)
+        other = (params or {}).get("other")
+        if not isinstance(other, str) or not any(i["path"] == other for i in snap["instances"]):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"{other} is not a discovered Odoo config")
+        return await asyncio.to_thread(compare.compare, path, other, snap)
 
     async def h_config_save(self, params, _conn):
         from . import configedit
