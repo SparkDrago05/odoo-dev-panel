@@ -120,6 +120,7 @@ class Sidecar:
             "config.save": self.h_config_save,
             "modules.graph": self.h_modules_graph,
             "compare.run": self.h_compare,
+            "docker.list": self.h_docker_list,
             "config.copy": self.h_config_copy,
             "db.list": self.h_db_list,
             "db.plan": self.h_db_plan,
@@ -516,6 +517,12 @@ class Sidecar:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"no module {exc.args[0]} in the addons_path") from exc
         except (configedit.ConfigError, OSError) as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_docker_list(self, params, _conn):
+        """Odoo containers, read-only (docker ps and inspect). Its own call: a slow daemon does not slow the scan."""
+        from .discover import docker
+
+        return await asyncio.to_thread(docker.discover_docker)
 
     async def h_compare(self, params, _conn):
         """Difference between two discovered configs (``path`` and ``other``): facts, packages, addons_path, options."""

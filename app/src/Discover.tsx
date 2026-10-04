@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { Compare } from "./Compare";
 import { ConfigEditor } from "./ConfigEditor";
+import { Docker } from "./Docker";
 import { Modules } from "./Modules";
 import { rpc } from "./rpc";
 
@@ -150,6 +151,7 @@ export default function Discover({ onError }: { onError: (message: string) => vo
       {snap && snap.units.length > 0 && (
         <p className="muted">Units: {snap.units.map((u) => `${u.name} ${u.active_state}/${u.sub_state}`).join(", ")}</p>
       )}
+      <Docker onError={onError} />
     </section>
   );
 }

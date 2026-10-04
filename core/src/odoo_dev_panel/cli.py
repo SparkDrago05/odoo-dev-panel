@@ -684,6 +684,31 @@ def cmd_modules(args) -> int:
     return 0
 
 
+def cmd_docker(args) -> int:
+    from .discover import docker
+
+    result = docker.discover_docker()
+    if args.json:
+        _print(result, True)
+        return 0 if result["available"] else 1
+    if result["error"]:
+        print(f"odp: {result['error']}", file=sys.stderr)
+        return 1
+    if not result["containers"]:
+        print("no Odoo containers")
+    for c in result["containers"]:
+        where = f"compose {c['compose']['project']}/{c['compose']['service']}" if c["compose"] else "docker run"
+        ports = ", ".join(f"{p['host_port']}->{p['container']}" for p in c["ports"]) or "no published ports"
+        print(f"{c['name']}  {c['image']}  Odoo {c['version'] or '?'}  {c['status']}  {where}  {ports}")
+        for label, m in [("config", c["config"]), ("data", c["data"]), *(("addons", a) for a in c["addons"])]:
+            if m:
+                host = m["host"] or (f"volume {m['volume']}" if m["volume"] else "inside the image")
+                print(f"    {label:7} {m['container']} = {host}")
+        if c["db"]["container"] or c["db"]["host"]:
+            print(f"    db      {c['db']['container'] or c['db']['host']}" + (f" as {c['db']['user']}" if c["db"]["user"] else ""))
+    return 0
+
+
 def cmd_compare(args) -> int:
     from . import compare
     from .discover import scan
@@ -920,6 +945,8 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("b", help="second config file")
     cmp_.add_argument("--json", action="store_true")
 
+    dk = sub.add_parser("docker", help="Odoo containers: image, version, compose project, ports, config and addons mounts (read-only)")
+    dk.add_argument("--json", action="store_true")
     mods = sub.add_parser("modules", help="module dependencies from the manifests in a config's addons_path")
     mods.add_argument("config", help="config file")
     mods.add_argument("module", nargs="?", help="focus on one module: what it needs and what needs it")
@@ -1049,6 +1076,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_compare(args)
     if args.command == "modules":
         return cmd_modules(args)
+    if args.command == "docker":
+        return cmd_docker(args)
     if args.command == "db":
         try:
             return cmd_db(args)
