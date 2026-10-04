@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { rpc } from "./rpc";
 
-type Place = { container: string; host: string | null; volume: string | null; in_image: boolean };
+type Place = { container: string; host: string | null; volume: string | null; anonymous: boolean; in_image: boolean };
 type Container = {
   id: string; name: string; image: string; version: string | null; status: string | null; running: boolean;
   compose: { project: string; service: string | null; working_dir: string | null; files: string[] } | null;
@@ -11,7 +11,7 @@ type Container = {
 };
 type Listing = { containers: Container[]; error: string | null; available: boolean };
 
-const where = (p: Place) => p.host ?? (p.volume ? `volume ${p.volume}` : "inside the image");
+const where = (p: Place) => p.host ?? (p.volume ? `${p.anonymous ? "anonymous volume" : "volume"} ${p.volume}` : "inside the image");
 
 /** Odoo containers, read-only. Loaded on its own so a slow Docker daemon does not hold up the scan. */
 export function Docker({ onError }: { onError: (message: string) => void }) {

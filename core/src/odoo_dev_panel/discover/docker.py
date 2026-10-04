@@ -19,6 +19,7 @@ OFFICIAL_RC = "/etc/odoo/odoo.conf"
 DATA_DIR = "/var/lib/odoo"
 _TAG_VERSION = re.compile(r"^(\d{2})(?:\.0)?(?:$|[-.])")
 _ODOO_CMD = re.compile(r"(^|/)(odoo|odoo-bin)$")
+_ANONYMOUS = re.compile(r"[0-9a-f]{64}")  # a volume the image declares (VOLUME) and nobody named
 
 Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 
@@ -104,13 +105,15 @@ def host_path(path: str | None, mounts: list[dict]) -> dict | None:
             if best is None or len(dest) > len(best["destination"].rstrip("/")):
                 best = m
     if best is None:
-        return {"container": path, "host": None, "volume": None, "in_image": True}
+        return {"container": path, "host": None, "volume": None, "anonymous": False, "in_image": True}
     rest = os.path.relpath(path, best["destination"]) if path != best["destination"] else ""
     rest = "" if rest == "." else rest
     if best["type"] == "bind" and best["source"]:
         return {"container": path, "host": os.path.join(best["source"], rest) if rest else best["source"],
-                "volume": None, "in_image": False}
-    return {"container": path, "host": None, "volume": best["name"], "in_image": False}
+                "volume": None, "anonymous": False, "in_image": False}
+    anonymous = bool(_ANONYMOUS.fullmatch(best["name"] or ""))
+    return {"container": path, "host": None, "volume": best["name"][:12] if anonymous else best["name"],
+            "anonymous": anonymous, "in_image": False}
 
 
 def _ports(row: dict) -> list[dict]:

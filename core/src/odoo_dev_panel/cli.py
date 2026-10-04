@@ -702,7 +702,8 @@ def cmd_docker(args) -> int:
         print(f"{c['name']}  {c['image']}  Odoo {c['version'] or '?'}  {c['status']}  {where}  {ports}")
         for label, m in [("config", c["config"]), ("data", c["data"]), *(("addons", a) for a in c["addons"])]:
             if m:
-                host = m["host"] or (f"volume {m['volume']}" if m["volume"] else "inside the image")
+                kind = "anonymous volume" if m["anonymous"] else "volume"
+                host = m["host"] or (f"{kind} {m['volume']}" if m["volume"] else "inside the image")
                 print(f"    {label:7} {m['container']} = {host}")
         if c["db"]["container"] or c["db"]["host"]:
             print(f"    db      {c['db']['container'] or c['db']['host']}" + (f" as {c['db']['user']}" if c["db"]["user"] else ""))

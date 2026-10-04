@@ -63,9 +63,9 @@ class Pure(unittest.TestCase):
         self.assertEqual(c["compose"]["project"], "shop")
         self.assertEqual(c["compose"]["files"], ["/home/dev/shop/compose.yaml"])
         self.assertEqual(c["config"], {"container": "/etc/odoo/odoo.conf", "host": "/home/dev/shop/config/odoo.conf",
-                                       "volume": None, "in_image": False})
+                                       "volume": None, "anonymous": False, "in_image": False})
         self.assertEqual(c["addons"][0]["host"], "/home/dev/shop/addons")
-        self.assertEqual(c["data"], {"container": "/var/lib/odoo", "host": None, "volume": "shop_odoo-web-data", "in_image": False})
+        self.assertEqual(c["data"], {"container": "/var/lib/odoo", "host": None, "volume": "shop_odoo-web-data", "anonymous": False, "in_image": False})
         self.assertEqual(c["db"], {"host": "db", "port": None, "user": "odoo", "container": "shop-db-1"})
         self.assertEqual([(p["host_port"], p["container"]) for p in c["ports"]], [(10017, "8069/tcp")])
 
@@ -81,7 +81,7 @@ class Pure(unittest.TestCase):
         self.assertEqual(plain["config"]["host"], "/srv/odoo16/odoo.conf")
         self.assertIsNone(plain["db"]["container"])
         self.assertEqual(custom["version"], "18.0")
-        self.assertEqual(custom["config"], {"container": "/opt/conf/erp.conf", "host": None, "volume": None, "in_image": True})
+        self.assertEqual(custom["config"], {"container": "/opt/conf/erp.conf", "host": None, "volume": None, "anonymous": False, "in_image": True})
 
     def test_host_path_picks_deepest_mount(self):
         mounts = [{"type": "bind", "source": "/h", "name": None, "destination": "/etc", "rw": True},
@@ -91,6 +91,10 @@ class Pure(unittest.TestCase):
         self.assertEqual(docker.host_path("/etc/odoo", mounts)["host"], "/h2")
         self.assertTrue(docker.host_path("/opt/x", mounts)["in_image"])
         self.assertIsNone(docker.host_path(None, mounts))
+        anon = [{"type": "volume", "source": "/var/lib/docker/volumes/x", "name": "0eb17440a9cb" + "a" * 52,
+                 "destination": "/var/lib/odoo", "rw": True}]
+        got = docker.host_path("/var/lib/odoo", anon)
+        self.assertEqual((got["volume"], got["anonymous"]), ("0eb17440a9cb", True))
 
 
 def fake(responses):
