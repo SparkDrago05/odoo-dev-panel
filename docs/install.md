@@ -75,6 +75,8 @@ odp agent start -u odoo17                    # unlock (sudo prompt)
 odp start /etc/odoo/odoo17/client.conf -d client_db --dev xml
 odp ps -u odoo17                             # sessions
 odp logs -u odoo17 <id>
+odp logs -u odoo17 -l error <id>              # errors and their tracebacks only
+odp logs -u odoo17 -p <id>                    # warnings and errors grouped, with counts
 odp stop -u odoo17 <id>
 odp doctor
 odp repair config-perms /opt/odoo17          # standard permissions for its configs (sudo)

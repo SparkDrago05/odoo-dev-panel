@@ -97,15 +97,41 @@ async def cmd_stop(args) -> int:
     return 0
 
 
+def _print_problems(result: dict, start: int) -> None:
+    counts = ", ".join(f"{n} {level}" for level, n in result["counts"].items() if n and level != "DEBUG")
+    print(f"{counts or 'no Odoo log records'}" + (f" (last part of the log, from byte {start})" if start else ""))
+    for g in result["groups"]:
+        lines = f"line {g['first_line']}" if g["count"] == 1 else f"lines {g['first_line']}-{g['last_line']}"
+        print(f"\n{g['level']:8} x{g['count']:<4} {g['logger']}  ({lines}{', ' + ', '.join(g['dbs']) if g['dbs'] else ''})")
+        print(f"  {g['title']}")
+        if g["frame"]:
+            print(f"  at {g['frame']['file']}:{g['frame']['line']} in {g['frame']['function']}")
+
+
 async def cmd_logs(args) -> int:
+    from . import logs
+
     done = asyncio.Event()
+    level_filter = logs.LevelFilter(args.level) if args.level else None
+
+    def write(data: str) -> None:
+        sys.stdout.write(level_filter.feed(data) if level_filter else data)
+        sys.stdout.flush()
 
     async def on_output(params, _conn):
-        sys.stdout.write(params["data"])
-        sys.stdout.flush()
+        write(params["data"])
 
     async def on_ended(params, _conn):
         done.set()
+
+    if args.problems:
+        text, start = await _with_agent(args.user, lambda c: logs.read_tail(c, args.id))
+        result = logs.analyze(text, args.level or logs.PROBLEM)
+        if args.json:
+            _print({**result, "start_offset": start}, True)
+        else:
+            _print_problems(result, start)
+        return 0
 
     if not args.follow:
         async def read_all(conn):
@@ -114,10 +140,12 @@ async def cmd_logs(args) -> int:
                 chunk = await conn.request("session.read", {"id": args.id, "offset": offset})
                 if not chunk["data"]:
                     return
-                sys.stdout.write(chunk["data"])
+                write(chunk["data"])
                 offset = chunk["offset"]
 
         await _with_agent(args.user, read_all)
+        if level_filter:
+            sys.stdout.write(level_filter.flush())
         return 0
 
     conn = await client.connect(args.user, {"session.output": on_output, "session.ended": on_ended})
@@ -128,6 +156,8 @@ async def cmd_logs(args) -> int:
         await asyncio.wait({closed, ended}, return_when=asyncio.FIRST_COMPLETED)
     finally:
         await conn.close()
+    if level_filter:
+        sys.stdout.write(level_filter.flush())
     return 0
 
 
@@ -670,6 +700,10 @@ def build_parser() -> argparse.ArgumentParser:
     logs = sub.add_parser("logs", help="print session output")
     logs.add_argument("--user", "-u", required=True)
     logs.add_argument("--follow", "-f", action="store_true")
+    logs.add_argument("--level", "-l", type=str.upper, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                      help="only records at this level or above, with their tracebacks")
+    logs.add_argument("--problems", "-p", action="store_true",
+                      help="group warnings and errors (or --level and above) instead of printing the log")
     logs.add_argument("id")
 
     stop_s = sub.add_parser("stop", help="stop a session")

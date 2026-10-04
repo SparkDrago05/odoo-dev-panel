@@ -72,6 +72,7 @@ The filestore is moved to `<filestore base>/.trash-<db>-<time>`, never deleted. 
 | What | Where |
 |---|---|
 | Odoo output of a session | the Output panel, `odp logs -u <user> <id>` |
+| Grouped warnings and errors of a session | Output panel, Problems; `odp logs -u <user> -p <id>` |
 | Agent state and session logs | `~/.local/state/odoo-dev-panel/` of the run-as user |
 | Provision receipt | `<installation root>/.odp-provision.json` |
 | Repair and database receipts | `~/.local/state/odoo-dev-panel/{repairs,db}/` of your user |

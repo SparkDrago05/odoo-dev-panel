@@ -51,6 +51,7 @@ select, input { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px
 .dot.error, .dot.lost { background: var(--bad); }
 div.error { background: color-mix(in srgb, var(--bad) 15%, var(--panel)); border: 1px solid var(--bad); border-radius: 8px; padding: 8px 12px; }
 code.command { display: block; margin: 8px 0; padding: 6px 8px; background: var(--code-bg); border-radius: 6px; font: 12px ui-monospace, monospace; overflow-x: auto; white-space: pre; }
+.log .problems { max-height: 420px; overflow: auto; }
 .log pre { margin: 0; height: 360px; overflow: auto; background: var(--code-bg); border-radius: 6px; padding: 8px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
 .modal-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: center; }
 .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: min(420px, 92vw); display: grid; gap: 10px; }

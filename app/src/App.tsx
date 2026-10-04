@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Discover from "./Discover";
 import Databases from "./Databases";
 import Doctor from "./Doctor";
+import { filterLog, LEVELS, type Level, Problems } from "./LogTools";
 import Provision from "./Provision";
 import Run from "./Run";
 import { rpc } from "./rpc";
@@ -57,6 +58,9 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selected, setSelected] = useState<Session | null>(null);
   const [log, setLog] = useState("");
+  const [minLevel, setMinLevel] = useState<Level | "">("");
+  const [logView, setLogView] = useState<"output" | "problems">("output");
+  const shownLog = useMemo(() => (minLevel ? filterLog(log, minLevel) : log), [log, minLevel]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [showProvision, setShowProvision] = useState(false);
@@ -117,7 +121,7 @@ export default function App() {
   useEffect(() => {
     const el = logRef.current;
     if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) el.scrollTop = el.scrollHeight;
-  }, [log]);
+  }, [shownLog]);
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
@@ -281,7 +285,31 @@ export default function App() {
       <section className="log">
         <h2>Output {selected && <span className="muted">· {selected.name} ({selected.id})</span>}</h2>
         {selected && <code className="command">{selected.argv.join(" ")}</code>}
-        <pre ref={logRef}>{selected ? log : "Select a session."}</pre>
+        {selected && !selected.pty && (
+          <div className="row">
+            <button className={logView === "output" ? "primary" : ""} onClick={() => setLogView("output")}>Output</button>
+            <button className={logView === "problems" ? "primary" : ""} onClick={() => setLogView("problems")}>Problems</button>
+            {logView === "output" && (
+              <label className="muted">
+                Show{" "}
+                <select value={minLevel} onChange={(e) => setMinLevel(e.target.value as Level | "")}>
+                  <option value="">everything</option>
+                  {LEVELS.filter((l) => l !== "DEBUG").map((l) => <option key={l} value={l}>{l} and above</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        )}
+        {selected && !selected.pty && logView === "problems" ? (
+          <Problems
+            user={selected.user}
+            id={selected.id}
+            state={sessions.find((x) => x.user === selected.user && x.id === selected.id)?.state ?? selected.state}
+            onError={setError}
+          />
+        ) : (
+          <pre ref={logRef}>{selected ? shownLog : "Select a session."}</pre>
+        )}
         {selected?.pty && (
           <ShellInput
             session={sessions.find((x) => x.user === selected.user && x.id === selected.id) ?? selected}

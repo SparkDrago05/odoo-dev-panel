@@ -106,6 +106,7 @@ class Sidecar:
             "session.unfollow": self.h_session_unfollow,
             "session.write": self.h_session_write,
             "session.resize": self.h_session_resize,
+            "session.problems": self.h_session_problems,
             "provision.plan": self.h_provision_plan,
             "provision.run": self.h_provision_run,
             "doctor.run": self.h_doctor,
@@ -272,6 +273,17 @@ class Sidecar:
     async def h_session_resize(self, params, _conn):
         conn = await self.agent(_user(params))
         return await conn.request("session.resize", {"id": params.get("id"), "rows": params.get("rows"), "cols": params.get("cols")})
+
+    async def h_session_problems(self, params, _conn):
+        """Counts per level and grouped warnings/errors of a session log (its last 8 MB)."""
+        from . import logs
+
+        conn = await self.agent(_user(params))
+        text, start = await logs.read_tail(conn, params.get("id"))
+        minimum = params.get("level") or logs.PROBLEM
+        if minimum not in logs.LEVELS:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"unknown level {minimum!r}")
+        return {**logs.analyze(text, minimum), "start_offset": start}
 
     async def h_provision_plan(self, params, _conn):
         """Dry run: preflight, steps, root script (verifier only) and config with placeholder passwords."""
