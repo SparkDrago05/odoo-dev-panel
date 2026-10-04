@@ -6,6 +6,8 @@ One control center for the Odoo development environments on an Ubuntu workstatio
 - **Run** an instance as its own Linux user, with a database, modules to install or upgrade, `--dev` flags or an interactive shell. Odoo keeps running when the app closes; only Stop ends it.
 - **Doctor** finds broken venvs, unreadable or exposed configs, port clashes, failed units and missing filestores, and repairs a broken venv safely.
 - **Databases:** back up, restore, clone with filestore, neutralize (default or your own SQL recipe) and drop, each with a plan you review first.
+- **Modules:** a dependency view of any config's addons paths: depends, required by, missing, shadowed and cyclic modules. Manifests are read, never imported.
+- **Compare** two configs: Odoo version, git commit, Python, venv packages, addons paths and options, with expected differences marked.
 - **Provision** a new installation for Odoo 15–20 with a pinned Python, a venv, a PostgreSQL role and a first config.
 - A desktop app and the `odp` CLI with the same features.
 
