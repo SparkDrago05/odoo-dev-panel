@@ -1,501 +1,116 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Discover from "./Discover";
-import CommandPalette, { type Command } from "./CommandPalette";
-import Databases from "./Databases";
-import Doctor from "./Doctor";
-import { Docker } from "./Docker";
-import { filterLog, LEVELS, type Level, Problems } from "./LogTools";
-import Provision from "./Provision";
-import Run from "./Run";
-import Services from "./Services";
-import { rpc } from "./rpc";
+import { motion, MotionConfig } from "motion/react";
+import { Component, type ReactNode, useEffect } from "react";
+import { Banners, Dock, StatusBar, Toasts, Topbar } from "./shell/Chrome";
+import { CommandPalette } from "./shell/CommandPalette";
+import { DialogHost } from "./shell/DialogHost";
+import { NAV, Sidebar } from "./shell/Sidebar";
+import { AppProvider, type Route, useApp } from "./state/app";
+import { DatabasesView } from "./views/Databases";
+import { DockerView } from "./views/Docker";
+import { DoctorView } from "./views/Doctor";
+import { HomeView } from "./views/Home";
+import { InstallationView, InstanceView } from "./views/Installation";
+import { ServicesView } from "./views/Services";
+import { SessionsView } from "./views/Sessions";
+import { SettingsView } from "./views/Settings";
 
-type Agent = {
-  user: string;
-  state: "running" | "stopped" | "error";
-  enabled: boolean;
-  info?: { pid: number; started_at: string; running_sessions: number };
-  error?: string;
-};
+function CurrentView({ route }: { route: Route }) {
+  switch (route.view) {
+    case "home": return <HomeView />;
+    case "installation": return <InstallationView root={route.root} tab={route.tab} />;
+    case "instance": return <InstanceView path={route.path} />;
+    case "databases": return <DatabasesView root={route.root} db={route.db} />;
+    case "sessions": return <SessionsView selectedKey={route.key} />;
+    case "doctor": return <DoctorView finding={route.finding} />;
+    case "docker": return <DockerView name={route.name} />;
+    case "services": return <ServicesView name={route.name} />;
+    case "settings": return <SettingsView />;
+  }
+}
 
-type Session = {
-  id: string;
-  user: string;
-  name: string;
-  argv: string[];
-  pid: number;
-  state: string;
-  started_at: string;
-  ended_at: string | null;
-  exit_code: number | null;
-  adopted: boolean;
-  log_size: number;
-  pty?: boolean;
-  meta?: { kind?: string; db?: string | null; port?: number | null; instance?: string };
-};
+/** Views that show an inspector when something is selected. */
+function hasInspector(r: Route) {
+  return (r.view === "instance") || (r.view === "databases" && !!r.db) || (r.view === "doctor" && !!r.finding)
+    || (r.view === "docker" && !!r.name) || (r.view === "services" && !!r.name);
+}
 
-type Page = "overview" | "databases" | "sessions" | "doctor" | "docker" | "services";
-const PAGES: { id: Page; label: string }[] = [
-  { id: "overview", label: "Installations" },
-  { id: "databases", label: "Databases" },
-  { id: "sessions", label: "Sessions" },
-  { id: "doctor", label: "Doctor" },
-  { id: "docker", label: "Docker" },
-  { id: "services", label: "Services" },
-];
-
-type PasswordRequest = { prompt: string; user: string | null; purpose?: string; resolve: (password: string | null) => void };
-
-const LOG_LIMIT = 400_000;
-// Terminal control sequences and carriage returns from PTY sessions; the log pane shows plain text.
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r/g;
-
-export default function App() {
-  type GroupState = { group: string; exists: boolean; member: boolean; active: boolean };
-  const [info, setInfo] = useState<{ version: string; user: string; group?: GroupState } | null>(null);
-  const [joining, setJoining] = useState(false);
-
-  const joinGroup = async () => {
-    setJoining(true);
-    try {
-      await rpc.request("group.join");
-      await rpc.restart();
-      setInfo(await rpc.request("app.info"));
-    } catch (e) {
-      setError(String((e as Error).message));
-    } finally {
-      setJoining(false);
-    }
-  };
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [selected, setSelected] = useState<Session | null>(null);
-  const [log, setLog] = useState("");
-  const [minLevel, setMinLevel] = useState<Level | "">("");
-  const [logView, setLogView] = useState<"output" | "problems">("output");
-  const shownLog = useMemo(() => (minLevel ? filterLog(log, minLevel) : log), [log, minLevel]);
-  const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
-  const toastId = useRef(0);
-  const dismissToast = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
-  /** Errors from every panel show as toasts; null clears nothing (a new action must not hide an old error). */
-  const setError = useCallback((message: string | null) => {
-    if (!message) return;
-    const id = ++toastId.current;
-    setToasts((t) => (t.some((x) => x.message === message) ? t : [...t.slice(-3), { id, message }]));
-    setTimeout(() => dismissToast(id), 12000);
-  }, [dismissToast]);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [showProvision, setShowProvision] = useState(false);
-  const [page, setPage] = useState<Page>(() => {
-    try {
-      const saved = localStorage.getItem("odp.page") as Page | null;
-      return saved && PAGES.some((p) => p.id === saved) ? saved : "overview";
-    } catch {
-      return "overview";
-    }
-  });
-  const [palette, setPalette] = useState(false);
-  const go = useCallback((next: Page) => {
-    setPage(next);
-    try { localStorage.setItem("odp.page", next); } catch { /* storage may be blocked */ }
-  }, []);
-
+function useShortcuts() {
+  const app = useApp();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      const mod = e.ctrlKey || e.metaKey;
+      const typing = (e.target as HTMLElement)?.closest?.("input, textarea, select, [contenteditable]");
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); app.setPalette(!app.palette); return; }
+      // Everything else only when no dialog is open, so shortcuts never act behind a modal.
+      if (app.dialog || app.password || app.confirmReq || app.palette) return;
+      if (mod && !e.shiftKey && e.key.toLowerCase() === "b") { e.preventDefault(); app.setPrefs({ sidebarCollapsed: !app.prefs.sidebarCollapsed }); }
+      else if (mod && !e.shiftKey && e.key.toLowerCase() === "i" && !typing) {
         e.preventDefault();
-        setPalette((open) => !open);
+        if (window.innerWidth < 1120) { if (app.drawer) app.setDrawer(false); else app.inspect(); } else app.setPrefs({ inspector: !app.prefs.inspector });
       }
+      else if (mod && !e.shiftKey && e.key.toLowerCase() === "j") { e.preventDefault(); app.setPrefs({ dock: !app.prefs.dock }); }
+      else if (mod && !e.shiftKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); app.nav({ view: NAV[Number(e.key) - 1].view } as Route); }
+      else if (e.altKey && e.key === "ArrowLeft" && !typing) { e.preventDefault(); app.back(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  const [passwordRequest, setPasswordRequest] = useState<PasswordRequest | null>(null);
-  const followRef = useRef<{ user: string; id: string; offset: number } | null>(null);
-  const logRef = useRef<HTMLPreElement>(null);
+  }, [app]);
+}
 
-  const refresh = useCallback(async () => {
-    try {
-      const [a, s] = await Promise.all([rpc.request<Agent[]>("agents.list"), rpc.request<Session[]>("sessions.list")]);
-      setAgents(a);
-      setSessions(s);
-    } catch (e) {
-      setError(String((e as Error).message));
-    }
-  }, []);
+function Shell() {
+  const app = useApp();
+  useShortcuts();
+  const r = app.route;
+  // One key per page (not per selection), so selecting a row does not replay the page transition.
+  const pageKey = r.view === "installation" ? `i:${r.root}` : r.view === "instance" ? `c:${r.path}` : r.view;
+  return (
+    <div className="app">
+      <div className="app-body">
+        <Sidebar />
+        <main className="main">
+          <Topbar inspectorAvailable={hasInspector(r)} />
+          <Banners />
+          {/* Enter-only transition: the new page is there at once, nothing waits for the old one to fade out. */}
+          <motion.div key={pageKey} className="workspace" initial={{ opacity: 0.4, y: 3 }} animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.16, ease: [0.2, 0.7, 0.2, 1] }}>
+            <CurrentView route={r} />
+          </motion.div>
+          <Dock />
+        </main>
+      </div>
+      <StatusBar />
+      <Toasts />
+      <DialogHost />
+      {app.palette && <CommandPalette />}
+    </div>
+  );
+}
 
-  // Sidecar events.
-  useEffect(() => {
-    rpc.handle(
-      "ui.askPassword",
-      (params) =>
-        new Promise((resolve) =>
-          setPasswordRequest({ prompt: params.prompt, user: params.user, purpose: params.purpose, resolve: (password) => resolve({ password }) }),
-        ),
+/** A render error shows what failed and a way back, instead of an empty window. Odoo sessions are not affected. */
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="empty" style={{ height: "100vh", alignContent: "center" }}>
+        <h3>The window hit an error</h3>
+        <p>Running Odoo sessions and agents are not affected.</p>
+        <pre className="block" style={{ maxWidth: 720, textAlign: "left" }}>{String(this.state.error.stack ?? this.state.error)}</pre>
+        <div className="row"><button className="btn primary" onClick={() => location.reload()}>Reload the window</button></div>
+      </div>
     );
-    const offs = [
-      rpc.on("session.output", (p) => {
-        const follow = followRef.current;
-        if (!follow || follow.id !== p.id || follow.user !== p.user) return;
-        follow.offset = p.offset;
-        setLog((old) => (old + p.data.replace(ANSI, "")).slice(-LOG_LIMIT));
-      }),
-      rpc.on("session.state", () => refresh()),
-      rpc.on("session.ended", () => refresh()),
-      rpc.on("agent.disconnected", () => refresh()),
-      rpc.on("sidecar.exit", () => setError("The core process exited. Restart the app.")),
-    ];
-    rpc.request("app.info").then(setInfo).catch((e) => setError(String(e.message)));
-    refresh();
-    const timer = setInterval(refresh, 3000);
-    return () => {
-      offs.forEach((off) => off());
-      clearInterval(timer);
-    };
-  }, [refresh]);
-
-  // Re-follow after an agent comes back (for example after "Unlock" following an agent crash).
-  useEffect(() => {
-    const follow = followRef.current;
-    if (!follow) return;
-    const agent = agents.find((a) => a.user === follow.user);
-    if (agent?.state === "running") {
-      rpc.request("session.follow", { user: follow.user, id: follow.id, offset: follow.offset }).catch(() => undefined);
-    }
-  }, [agents.map((a) => `${a.user}:${a.state}:${a.info?.pid}`).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    const el = logRef.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) el.scrollTop = el.scrollHeight;
-  }, [shownLog]);
-
-  const run = async (label: string, fn: () => Promise<unknown>) => {
-    setBusy(label);
-    setError(null);
-    try {
-      await fn();
-    } catch (e) {
-      setError(String((e as Error).message));
-    } finally {
-      setBusy(null);
-      refresh();
-    }
-  };
-
-  const select = async (session: Session) => {
-    const previous = followRef.current;
-    if (previous) rpc.request("session.unfollow", { user: previous.user, id: previous.id }).catch(() => undefined);
-    setSelected(session);
-    setLog("");
-    // Start near the end of long logs.
-    const offset = Math.max(0, session.log_size - LOG_LIMIT);
-    followRef.current = { user: session.user, id: session.id, offset };
-    await rpc.request("session.follow", { user: session.user, id: session.id, offset }).catch((e) => setError(e.message));
-  };
-
-  const runningAgents = agents.filter((a) => a.state === "running");
-
-  const commands: Command[] = [
-    ...PAGES.map((p) => ({ id: `go-${p.id}`, label: `Go to ${p.label}`, hint: "page", run: () => go(p.id) })),
-    { id: "new-install", label: "New installation…", hint: "provision Odoo", run: () => setShowProvision(true) },
-    { id: "refresh", label: "Refresh sessions and agents", run: () => { refresh(); } },
-    ...sessions
-      .filter((x) => x.state === "running")
-      .flatMap((x) => [
-        { id: `show-${x.user}-${x.id}`, label: `Show output: ${x.name}`, hint: x.user, run: () => { go("sessions"); select(x); } },
-        { id: `stop-${x.user}-${x.id}`, label: `Stop session: ${x.name}`, hint: x.user, run: () => run(`stopping ${x.name}`, () => rpc.request("session.stop", { user: x.user, id: x.id })) },
-      ]),
-  ];
-  const runningSessions = sessions.filter((x) => x.state === "running").length;
-  const title = PAGES.find((p) => p.id === page)!.label;
-
-  return (
-    <div className="shell">
-      <nav className="sidebar" aria-label="Main">
-        <div className="brand">Odoo Dev Panel</div>
-        {PAGES.map((p) => (
-          <button key={p.id} className={`nav-item ${page === p.id ? "active" : ""}`} aria-current={page === p.id ? "page" : undefined} onClick={() => go(p.id)}>
-            {p.label}
-            {p.id === "sessions" && runningSessions > 0 && <span className="badge">{runningSessions}</span>}
-          </button>
-        ))}
-        <div className="grow" />
-        <button className="primary" onClick={() => setShowProvision(true)}>New installation</button>
-      </nav>
-      <div className="main">
-        <header className="topbar">
-          <h1>{title}</h1>
-          <button className="palette-trigger" onClick={() => setPalette(true)}>Search or run a command… <kbd>Ctrl K</kbd></button>
-        </header>
-        <div className="page">
-      {info?.group && !info.group.active && (
-        <div className="error" role="alert">
-          {!info.group.exists ? (
-            <>Group {info.group.group} is missing: the package is not set up. Reinstall it: <code>sudo apt install --reinstall odoo-dev-panel</code></>
-          ) : !info.group.member ? (
-            <>
-              You are not in the {info.group.group} group, so the app cannot talk to the agents.{" "}
-              <button onClick={joinGroup} disabled={joining} title={`Runs: sudo usermod -aG ${info.group.group} ${info.user}`}>
-                {joining ? "Adding…" : "Add me"}
-              </button>{" "}
-              <span className="muted">(one sudo prompt; no logout needed)</span>
-            </>
-          ) : (
-            <>You are in {info.group.group}, but this app session cannot use it yet. Close and reopen the app, or log out and back in.</>
-          )}
-        </div>
-      )}
-
-      <div hidden={page !== "overview"}><Discover onError={setError} /></div>
-      <div hidden={page !== "databases"}><Databases onError={setError} /></div>
-      <div hidden={page !== "doctor"}><Doctor onError={setError} /></div>
-      <div hidden={page !== "docker"}><section><h2>Docker</h2><Docker onError={setError} /></section></div>
-      {page === "services" && <Services onError={setError} />}
-      <div className="stack" hidden={page !== "sessions"}>
-      <section>
-        <h2>Agents</h2>
-        {agents.length === 0 && <p className="muted">No version users found. Add them to the odoo-dev group.</p>}
-        <table>
-          <tbody>
-            {agents.map((a) => (
-              <tr key={a.user}>
-                <td>{a.user}</td>
-                <td>
-                  <span className={`dot ${a.state}`} /> {a.state}
-                  {a.info && <span className="muted"> · pid {a.info.pid} · since {a.info.started_at}</span>}
-                  {!a.enabled && a.state !== "running" && (
-                    <span className="muted"> · not in odoo-dev; Enable runs <code>sudo usermod -aG odoo-dev {a.user}</code></span>
-                  )}
-                </td>
-                <td className="actions">
-                  {!a.enabled && a.state !== "running" ? (
-                    <button
-                      className="primary"
-                      title={`Runs: sudo usermod -aG odoo-dev ${a.user}`}
-                      onClick={() => run(`enabling ${a.user}`, () => rpc.request("agent.enable", { user: a.user }))}
-                    >
-                      Enable
-                    </button>
-                  ) : a.state === "running" ? (
-                    <button onClick={() => run(`stopping agent ${a.user}`, () => rpc.request("agent.stop", { user: a.user }))}>
-                      Stop agent
-                    </button>
-                  ) : (
-                    <button
-                      className="primary"
-                      onClick={() => run(`unlocking ${a.user}`, () => rpc.request("agent.start", { user: a.user }))}
-                    >
-                      Unlock
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <Run
-        agents={runningAgents.map((a) => a.user)}
-        onError={setError}
-        onStarted={async (user, id) => {
-          await refresh();
-          const session = (await rpc.request<Session[]>("sessions.list")).find((x) => x.user === user && x.id === id);
-          if (session) await select(session);
-        }}
-      />
-
-      <section>
-        <h2>Sessions</h2>
-        {sessions.length === 0 && <p className="muted">No sessions.</p>}
-        <table>
-          <thead>
-            <tr><th>Name</th><th>User</th><th>State</th><th>PID</th><th>Started</th><th /></tr>
-          </thead>
-          <tbody>
-            {sessions.map((s) => (
-              <tr key={`${s.user}/${s.id}`} className={selected?.id === s.id ? "selected" : ""} onClick={() => select(s)}>
-                <td>{s.name}</td>
-                <td>{s.user}</td>
-                <td>
-                  <span className={`dot ${s.state}`} /> {s.state}
-                  {s.adopted && <span className="muted"> · re-adopted</span>}
-                  {s.state === "exited" && <span className="muted"> · exit {s.exit_code ?? "unknown"}</span>}
-                  {s.meta?.kind && <span className="muted"> · {s.meta.kind}{s.meta.port ? ` :${s.meta.port}` : ""}</span>}
-                </td>
-                <td>{s.pid}</td>
-                <td>{s.started_at}</td>
-                <td className="actions">
-                  {s.state === "running" && s.meta?.port && (
-                    <button onClick={(e) => {
-                      e.stopPropagation();
-                      rpc.request("run.open", { port: s.meta!.port }).catch((err) => setError(String(err.message)));
-                    }}>Open</button>
-                  )}
-                  {(s.state === "running" || s.state === "stopping") && (
-                    <button onClick={(e) => {
-                      e.stopPropagation();
-                      run(`stopping ${s.name}`, () => rpc.request("session.stop", { user: s.user, id: s.id }));
-                    }}>Stop</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="log">
-        <h2>Output {selected && <span className="muted">· {selected.name} ({selected.id})</span>}</h2>
-        {selected && <code className="command">{selected.argv.join(" ")}</code>}
-        {selected && !selected.pty && (
-          <div className="row">
-            <button className={logView === "output" ? "primary" : ""} onClick={() => setLogView("output")}>Output</button>
-            <button className={logView === "problems" ? "primary" : ""} onClick={() => setLogView("problems")}>Problems</button>
-            {logView === "output" && (
-              <label className="muted">
-                Show{" "}
-                <select value={minLevel} onChange={(e) => setMinLevel(e.target.value as Level | "")}>
-                  <option value="">everything</option>
-                  {LEVELS.filter((l) => l !== "DEBUG").map((l) => <option key={l} value={l}>{l} and above</option>)}
-                </select>
-              </label>
-            )}
-          </div>
-        )}
-        {selected && !selected.pty && logView === "problems" ? (
-          <Problems
-            user={selected.user}
-            id={selected.id}
-            state={sessions.find((x) => x.user === selected.user && x.id === selected.id)?.state ?? selected.state}
-            onError={setError}
-          />
-        ) : (
-          <pre ref={logRef}>{selected ? shownLog : "Select a session."}</pre>
-        )}
-        {selected?.pty && (
-          <ShellInput
-            session={sessions.find((x) => x.user === selected.user && x.id === selected.id) ?? selected}
-            onError={setError}
-          />
-        )}
-      </section>
-
-      </div>
-        </div>
-        <footer className="statusbar">
-          <span>{info ? `v${info.version} · ${info.user}` : "starting core…"}</span>
-          <span><span className={`dot ${runningAgents.length ? "running" : ""}`} /> {runningAgents.length} agent{runningAgents.length === 1 ? "" : "s"} running</span>
-          <span>{runningSessions} session{runningSessions === 1 ? "" : "s"} running</span>
-          {busy && <span>{busy}…</span>}
-        </footer>
-      </div>
-      {showProvision && <Provision onClose={() => { setShowProvision(false); refresh(); }} />}
-
-      {passwordRequest && (
-        <PasswordDialog
-          request={passwordRequest}
-          onDone={(password) => {
-            passwordRequest.resolve(password);
-            setPasswordRequest(null);
-          }}
-        />
-      )}
-      <div className="toasts" aria-live="assertive">
-        {toasts.map((t) => (
-          <div key={t.id} className="toast" role="alert">
-            <span>{t.message}</span>
-            <button aria-label="Dismiss" onClick={() => dismissToast(t.id)}>×</button>
-          </div>
-        ))}
-      </div>
-      {palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
-    </div>
-  );
+  }
 }
 
-function ShellInput({ session, onError }: { session: Session; onError: (message: string) => void }) {
-  const [line, setLine] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
-  const [pos, setPos] = useState(-1);
-  const send = (data: string) =>
-    rpc.request("session.write", { user: session.user, id: session.id, data }).catch((e) => onError(String(e.message)));
-  if (session.state !== "running") return <p className="muted">Shell ended.</p>;
+export default function App() {
   return (
-    <form
-      className="row"
-      onSubmit={(e) => {
-        e.preventDefault();
-        send(line + "\n");
-        if (line.trim()) setHistory([line, ...history].slice(0, 200));
-        setLine("");
-        setPos(-1);
-      }}
-    >
-      <input
-        className="shell-input"
-        autoFocus
-        value={line}
-        placeholder=">>> Python; env is the Odoo environment. Enter sends, Ctrl-C interrupts, Ctrl-D exits."
-        aria-label="Shell input"
-        onChange={(e) => setLine(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.ctrlKey && (e.key === "c" || e.key === "d") && !line) {
-            e.preventDefault();
-            send(e.key === "c" ? "\x03" : "\x04");
-          } else if (e.key === "ArrowUp" && history.length) {
-            e.preventDefault();
-            const next = Math.min(pos + 1, history.length - 1);
-            setPos(next);
-            setLine(history[next]);
-          } else if (e.key === "ArrowDown") {
-            e.preventDefault();
-            const next = pos - 1;
-            setPos(Math.max(next, -1));
-            setLine(next >= 0 ? history[next] : "");
-          }
-        }}
-      />
-      <button type="submit">Send</button>
-    </form>
-  );
-}
-
-function PasswordDialog({ request, onDone }: { request: PasswordRequest; onDone: (password: string | null) => void }) {
-  const [password, setPassword] = useState("");
-  return (
-    <div className="modal-backdrop">
-      <form
-        className="modal"
-        onSubmit={(e) => {
-          e.preventDefault();
-          onDone(password);
-        }}
-      >
-        <h2>{request.purpose === "provision" ? "Create installation" : request.purpose === "enable" ? `Enable ${request.user}`
-          : request.purpose === "permissions" ? "Fix config permissions" : request.purpose === "join" ? "Join odoo-dev"
-          : `Unlock ${request.user ?? "agent"}`}</h2>
-        <p className="muted">
-          {request.purpose === "provision"
-            ? `sudo asks for your password once, to run the reviewed script that creates ${request.user}. `
-            : request.purpose === "enable"
-            ? `sudo asks for your password to run: usermod -aG odoo-dev ${request.user}. `
-            : request.purpose === "join"
-            ? `sudo asks for your password to run: usermod -aG odoo-dev ${request.user}. `
-            : request.purpose === "permissions"
-            ? `sudo asks for your password once, to run the reviewed chown/chmod script for the configs of ${request.user}. `
-            : `sudo asks for your password to start the agent as ${request.user}. `}
-          It is passed to sudo and not stored.
-        </p>
-        <label>
-          {request.prompt || "Password:"}
-          <input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        <div className="row end">
-          <button type="button" onClick={() => onDone(null)}>Cancel</button>
-          <button className="primary" type="submit">{request.purpose === "unlock" || !request.purpose ? "Unlock" : "Continue"}</button>
-        </div>
-      </form>
-    </div>
+    <ErrorBoundary>
+      <MotionConfig reducedMotion="user">
+        <AppProvider>
+          <Shell />
+        </AppProvider>
+      </MotionConfig>
+    </ErrorBoundary>
   );
 }

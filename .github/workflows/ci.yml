@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install -g pnpm@9
-      - run: cd app && pnpm install --frozen-lockfile && pnpm exec tsc --noEmit
+      - run: cd app && pnpm install --frozen-lockfile && pnpm exec tsc --noEmit && pnpm test
 
   deb:
     name: Build .deb

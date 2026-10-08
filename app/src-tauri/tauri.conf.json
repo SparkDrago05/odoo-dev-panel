@@ -11,7 +11,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "Odoo Dev Panel", "width": 1200, "height": 820 }],
+    "windows": [{ "label": "main", "title": "Odoo Dev Panel", "width": 1280, "height": 840, "minWidth": 760, "minHeight": 520 }],
     "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'" }
   },
   "bundle": {

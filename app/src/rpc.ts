@@ -24,7 +24,17 @@ class Rpc {
     this.ready = this.init();
   }
 
+  /** Set in a plain browser during development: a fake core with fixtures (src/dev/mock.ts). */
+  private mock: ((message: Json) => void) | null = null;
+
   private async init() {
+    // Outside Tauri (vite dev server in a browser) there is no core: the mock answers instead. The import is
+    // dropped from production builds.
+    if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
+      const { createMock } = await import("./dev/mock");
+      this.mock = createMock((message) => this.onMessage(message));
+      return;
+    }
     await listen<string>("rpc", (event) => this.onMessage(JSON.parse(event.payload)));
     await listen("sidecar-exit", () => {
       for (const { reject } of this.pending.values()) reject(new Error("sidecar exited"));
@@ -39,10 +49,12 @@ class Rpc {
     await this.ready;
     for (const { reject } of this.pending.values()) reject(new Error("core restarted"));
     this.pending.clear();
+    if (this.mock) return;
     await invoke("sidecar_restart");
   }
 
   private async send(message: Json) {
+    if (this.mock) return this.mock(message);
     await invoke("rpc_send", { message: JSON.stringify(message) });
   }
 

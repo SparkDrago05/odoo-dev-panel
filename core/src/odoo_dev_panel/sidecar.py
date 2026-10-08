@@ -857,7 +857,7 @@ class Sidecar:
         from . import services
 
         p = params or {}
-        self._unlocking, self._purpose = pwd.getpwuid(os.getuid()).pw_name, "unlock"
+        self._unlocking, self._purpose = pwd.getpwuid(os.getuid()).pw_name, "service"
         try:
             output = await services.run_action_askpass(p.get("action", ""), p.get("name", ""), {"ODP_ASKPASS_SOCK": self.askpass_path})
         except services.ServiceError as exc:
