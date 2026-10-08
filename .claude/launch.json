@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ui-mock",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "app", "exec", "vite", "--port", "1430", "--strictPort"],
+      "port": 1430
+    }
+  ]
+}
