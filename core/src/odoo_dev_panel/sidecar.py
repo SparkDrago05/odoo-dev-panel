@@ -137,6 +137,10 @@ class Sidecar:
             "db.run": self.h_db_run,
             "db.snapshots": self.h_db_snapshots,
             "discover.scan": self.h_discover,
+            "services.list": self.h_services_list,
+            "services.action": self.h_services_action,
+            "services.journal": self.h_services_journal,
+            "services.show": self.h_services_show,
             "discover.adopt": self.h_adopt,
             "group.join": self.h_group_join,
             "debug.print": self.h_debug_print,
@@ -843,6 +847,41 @@ class Sidecar:
 
         roots = [Path(r) for r in (params or {}).get("roots") or []] or None
         return await asyncio.to_thread(scan.scan, roots, not (params or {}).get("no_databases"))
+
+    async def h_services_list(self, params, _conn):
+        from . import services
+
+        return await asyncio.to_thread(services.list_services)
+
+    async def h_services_action(self, params, _conn):
+        from . import services
+
+        p = params or {}
+        self._unlocking, self._purpose = pwd.getpwuid(os.getuid()).pw_name, "unlock"
+        try:
+            output = await services.run_action_askpass(p.get("action", ""), p.get("name", ""), {"ODP_ASKPASS_SOCK": self.askpass_path})
+        except services.ServiceError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        finally:
+            self._unlocking, self._purpose = None, "unlock"
+        return {"output": output}
+
+    async def h_services_journal(self, params, _conn):
+        from . import services
+
+        p = params or {}
+        try:
+            return {"text": await services.journal_async(p.get("name", ""), int(p.get("lines") or 200), p.get("since"))}
+        except services.ServiceError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_services_show(self, params, _conn):
+        from . import services
+
+        try:
+            return await asyncio.to_thread(services.read_unit, (params or {}).get("name", ""))
+        except services.ServiceError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
 
     async def h_adopt(self, params, _conn):
         """Adopt or release (``adopt: false``) a discovered installation. Writes the registry only."""

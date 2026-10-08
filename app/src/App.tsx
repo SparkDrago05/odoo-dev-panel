@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Discover from "./Discover";
+import CommandPalette, { type Command } from "./CommandPalette";
 import Databases from "./Databases";
 import Doctor from "./Doctor";
+import { Docker } from "./Docker";
 import { filterLog, LEVELS, type Level, Problems } from "./LogTools";
 import Provision from "./Provision";
 import Run from "./Run";
+import Services from "./Services";
 import { rpc } from "./rpc";
 
 type Agent = {
@@ -30,6 +33,16 @@ type Session = {
   pty?: boolean;
   meta?: { kind?: string; db?: string | null; port?: number | null; instance?: string };
 };
+
+type Page = "overview" | "databases" | "sessions" | "doctor" | "docker" | "services";
+const PAGES: { id: Page; label: string }[] = [
+  { id: "overview", label: "Installations" },
+  { id: "databases", label: "Databases" },
+  { id: "sessions", label: "Sessions" },
+  { id: "doctor", label: "Doctor" },
+  { id: "docker", label: "Docker" },
+  { id: "services", label: "Services" },
+];
 
 type PasswordRequest = { prompt: string; user: string | null; purpose?: string; resolve: (password: string | null) => void };
 
@@ -61,9 +74,42 @@ export default function App() {
   const [minLevel, setMinLevel] = useState<Level | "">("");
   const [logView, setLogView] = useState<"output" | "problems">("output");
   const shownLog = useMemo(() => (minLevel ? filterLog(log, minLevel) : log), [log, minLevel]);
-  const [error, setError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
+  const toastId = useRef(0);
+  const dismissToast = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+  /** Errors from every panel show as toasts; null clears nothing (a new action must not hide an old error). */
+  const setError = useCallback((message: string | null) => {
+    if (!message) return;
+    const id = ++toastId.current;
+    setToasts((t) => (t.some((x) => x.message === message) ? t : [...t.slice(-3), { id, message }]));
+    setTimeout(() => dismissToast(id), 12000);
+  }, [dismissToast]);
   const [busy, setBusy] = useState<string | null>(null);
   const [showProvision, setShowProvision] = useState(false);
+  const [page, setPage] = useState<Page>(() => {
+    try {
+      const saved = localStorage.getItem("odp.page") as Page | null;
+      return saved && PAGES.some((p) => p.id === saved) ? saved : "overview";
+    } catch {
+      return "overview";
+    }
+  });
+  const [palette, setPalette] = useState(false);
+  const go = useCallback((next: Page) => {
+    setPage(next);
+    try { localStorage.setItem("odp.page", next); } catch { /* storage may be blocked */ }
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [passwordRequest, setPasswordRequest] = useState<PasswordRequest | null>(null);
   const followRef = useRef<{ user: string; id: string; offset: number } | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
@@ -149,16 +195,39 @@ export default function App() {
 
   const runningAgents = agents.filter((a) => a.state === "running");
 
-  return (
-    <div className="layout">
-      <header>
-        <h1>Odoo Dev Panel</h1>
-        <span className="muted">
-          {info ? `v${info.version} · ${info.user}` : "starting core…"} {busy && `· ${busy}…`}
-        </span>
-        <button className="primary" style={{ marginLeft: "auto" }} onClick={() => setShowProvision(true)}>New installation</button>
-      </header>
+  const commands: Command[] = [
+    ...PAGES.map((p) => ({ id: `go-${p.id}`, label: `Go to ${p.label}`, hint: "page", run: () => go(p.id) })),
+    { id: "new-install", label: "New installation…", hint: "provision Odoo", run: () => setShowProvision(true) },
+    { id: "refresh", label: "Refresh sessions and agents", run: () => { refresh(); } },
+    ...sessions
+      .filter((x) => x.state === "running")
+      .flatMap((x) => [
+        { id: `show-${x.user}-${x.id}`, label: `Show output: ${x.name}`, hint: x.user, run: () => { go("sessions"); select(x); } },
+        { id: `stop-${x.user}-${x.id}`, label: `Stop session: ${x.name}`, hint: x.user, run: () => run(`stopping ${x.name}`, () => rpc.request("session.stop", { user: x.user, id: x.id })) },
+      ]),
+  ];
+  const runningSessions = sessions.filter((x) => x.state === "running").length;
+  const title = PAGES.find((p) => p.id === page)!.label;
 
+  return (
+    <div className="shell">
+      <nav className="sidebar" aria-label="Main">
+        <div className="brand">Odoo Dev Panel</div>
+        {PAGES.map((p) => (
+          <button key={p.id} className={`nav-item ${page === p.id ? "active" : ""}`} aria-current={page === p.id ? "page" : undefined} onClick={() => go(p.id)}>
+            {p.label}
+            {p.id === "sessions" && runningSessions > 0 && <span className="badge">{runningSessions}</span>}
+          </button>
+        ))}
+        <div className="grow" />
+        <button className="primary" onClick={() => setShowProvision(true)}>New installation</button>
+      </nav>
+      <div className="main">
+        <header className="topbar">
+          <h1>{title}</h1>
+          <button className="palette-trigger" onClick={() => setPalette(true)}>Search or run a command… <kbd>Ctrl K</kbd></button>
+        </header>
+        <div className="page">
       {info?.group && !info.group.active && (
         <div className="error" role="alert">
           {!info.group.exists ? (
@@ -177,18 +246,12 @@ export default function App() {
         </div>
       )}
 
-      {error && (
-        <div className="error" role="alert">
-          {error} <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
-
-      <Discover onError={setError} />
-
-      <Doctor onError={setError} />
-
-      <Databases onError={setError} />
-
+      <div hidden={page !== "overview"}><Discover onError={setError} /></div>
+      <div hidden={page !== "databases"}><Databases onError={setError} /></div>
+      <div hidden={page !== "doctor"}><Doctor onError={setError} /></div>
+      <div hidden={page !== "docker"}><section><h2>Docker</h2><Docker onError={setError} /></section></div>
+      {page === "services" && <Services onError={setError} />}
+      <div className="stack" hidden={page !== "sessions"}>
       <section>
         <h2>Agents</h2>
         {agents.length === 0 && <p className="muted">No version users found. Add them to the odoo-dev group.</p>}
@@ -318,6 +381,15 @@ export default function App() {
         )}
       </section>
 
+      </div>
+        </div>
+        <footer className="statusbar">
+          <span>{info ? `v${info.version} · ${info.user}` : "starting core…"}</span>
+          <span><span className={`dot ${runningAgents.length ? "running" : ""}`} /> {runningAgents.length} agent{runningAgents.length === 1 ? "" : "s"} running</span>
+          <span>{runningSessions} session{runningSessions === 1 ? "" : "s"} running</span>
+          {busy && <span>{busy}…</span>}
+        </footer>
+      </div>
       {showProvision && <Provision onClose={() => { setShowProvision(false); refresh(); }} />}
 
       {passwordRequest && (
@@ -329,6 +401,15 @@ export default function App() {
           }}
         />
       )}
+      <div className="toasts" aria-live="assertive">
+        {toasts.map((t) => (
+          <div key={t.id} className="toast" role="alert">
+            <span>{t.message}</span>
+            <button aria-label="Dismiss" onClick={() => dismissToast(t.id)}>×</button>
+          </div>
+        ))}
+      </div>
+      {palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
     </div>
   );
 }

@@ -337,6 +337,39 @@ async def _attach_shell(user: str, planned: dict) -> int:
     return 0
 
 
+def cmd_services(args) -> int:
+    from . import services
+
+    try:
+        if args.services_command in ("list", "status"):
+            rows = services.list_services()
+            if getattr(args, "name", None):
+                rows = [r for r in rows if r["name"] == args.name]
+                if not rows:
+                    raise services.ServiceError(f"{args.name} is not an Odoo systemd unit known to Odoo Dev Panel")
+            if args.json:
+                _print(rows, True)
+                return 0
+            if not rows:
+                print("No Odoo systemd units found.")
+            for r in rows:
+                print(f"{r['name']:32} {r['active_state'] or '?'}/{r['sub_state'] or '?'}  {r['enabled'] or '?':9} user {r['user'] or '-'}  config {r['config'] or '-'}")
+            return 0
+        if args.services_command == "logs":
+            print(services.journal(args.name, args.lines, args.since), end="")
+            return 0
+        if args.services_command == "show":
+            print(services.read_unit(args.name)["text"], end="")
+            return 0
+        out = services.run_action(args.services_command, args.name)
+        if out:
+            print(out)
+        return 0
+    except services.ServiceError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+
+
 def cmd_discover(args) -> int:
     from pathlib import Path
 
@@ -1028,6 +1061,20 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--root", action="append", default=[], help="directory to scan (repeatable); default /opt /srv ~")
     discover.add_argument("--no-databases", action="store_true")
 
+    svc = sub.add_parser("services", help="Odoo systemd units: list, start, stop, restart, enable, disable, logs, show").add_subparsers(
+        dest="services_command", required=True
+    )
+    for name, text in (("list", "list Odoo units with state"), ("status", "state of one unit")):
+        p = svc.add_parser(name, help=text)
+        p.add_argument("name", nargs="?" if name == "list" else None)
+        p.add_argument("--json", action="store_true")
+    for name in ("start", "stop", "restart", "enable", "disable", "show"):
+        svc.add_parser(name, help=f"{name} an Odoo unit" if name != "show" else "print the unit file").add_argument("name")
+    logs = svc.add_parser("logs", help="journal of an Odoo unit")
+    logs.add_argument("name")
+    logs.add_argument("-n", "--lines", type=int, default=200)
+    logs.add_argument("--since")
+
     adopt = sub.add_parser("adopt", help="remember a discovered installation in the registry; changes no Odoo files")
     adopt.add_argument("root")
     adopt.add_argument("--name")
@@ -1230,6 +1277,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_adopt(args)
     if args.command == "discover":
         return cmd_discover(args)
+    if args.command == "services":
+        return cmd_services(args)
     if args.command == "doctor":
         return cmd_doctor(args)
     if args.command == "repair":

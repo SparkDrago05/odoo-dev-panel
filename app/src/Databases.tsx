@@ -18,9 +18,9 @@ type Finished = {
 const LOG_LIMIT = 400_000;
 const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
 
-export default function Databases({ onError }: { onError: (message: string) => void }) {
+export default function Databases({ onError, fixedRoot }: { onError: (message: string) => void; fixedRoot?: string }) {
   const [roots, setRoots] = useState<{ root: string; version: string | null }[]>([]);
-  const [root, setRoot] = useState("");
+  const [root, setRoot] = useState(fixedRoot ?? "");
   const [listing, setListing] = useState<Listing | null>(null);
   const [dialog, setDialog] = useState<{ action: Action; source?: string; backup?: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,7 +33,7 @@ export default function Databases({ onError }: { onError: (message: string) => v
         const found = await rpc.request<{ containers: { name: string; db: { container: string | null } }[] }>("docker.list").catch(() => ({ containers: [] }));
         const all = [...s.installations, ...found.containers.filter((c) => c.db.container).map((c) => ({ root: `docker:${c.name}`, version: null }))];
         setRoots(all);
-        if (all[0]) setRoot(all[0].root);
+        if (!fixedRoot && all[0]) setRoot(all[0].root);
       })
       .catch((e) => onError(String(e.message)));
   }, []);
@@ -57,15 +57,15 @@ export default function Databases({ onError }: { onError: (message: string) => v
 
   return (
     <section>
-      <h2>Databases</h2>
+      {!fixedRoot && <h2>Databases</h2>}
       <div className="row">
-        <select value={root} onChange={(e) => setRoot(e.target.value)}>
+        {!fixedRoot && <select value={root} onChange={(e) => setRoot(e.target.value)}>
           {roots.map((r) => (
             <option key={r.root} value={r.root}>
               {r.root.startsWith("docker:") ? `Docker container ${r.root.slice(7)}` : r.root}{r.version ? ` (Odoo ${r.version})` : ""}
             </option>
           ))}
-        </select>
+        </select>}
         <button onClick={load} disabled={loading || !root}>{loading ? "Loading…" : "Refresh"}</button>
         <button disabled={!root} onClick={() => setDialog({ action: "restore" })}>Restore backup…</button>
       </div>

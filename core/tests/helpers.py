@@ -32,12 +32,13 @@ class AgentProcess:
         return self.socket_dir / f"{pwd.getpwuid(os.getuid()).pw_name}.sock"
 
     def start(self) -> None:
+        self._stderr = open(self.state_dir.parent / "agent-stderr.log", "ab")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "odoo_dev_panel", "agent", "serve", "--foreground",
              "--socket-dir", str(self.socket_dir), "--state-dir", str(self.state_dir), "--allow-group", ""],
             env=core_env(),
             stdout=subprocess.DEVNULL,
-            stderr=open(self.state_dir.parent / "agent-stderr.log", "ab"),
+            stderr=self._stderr,
         )
         wait_for(self._accepting, 10, "agent socket")
 
@@ -56,11 +57,18 @@ class AgentProcess:
     def kill9(self) -> None:
         self.proc.kill()
         self.proc.wait()
+        self._close_stderr()
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             self.proc.wait(10)
+        self._close_stderr()
+
+    def _close_stderr(self) -> None:
+        handle = getattr(self, "_stderr", None)
+        if handle and not handle.closed:
+            handle.close()
 
 
 def wait_for(predicate, timeout: float, what: str):

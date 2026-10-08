@@ -19,7 +19,7 @@ type Finished = { run_id: string; ok: boolean; error: string | null; venv: strin
 const LOG_LIMIT = 400_000;
 const DOT = { error: "error", warning: "stopping", info: "" } as const;
 
-export default function Doctor({ onError }: { onError: (message: string) => void }) {
+export default function Doctor({ onError, installation }: { onError: (message: string) => void; installation?: string }) {
   const [report, setReport] = useState<Report | null>(null);
   const [running, setRunning] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
@@ -37,9 +37,11 @@ export default function Doctor({ onError }: { onError: (message: string) => void
     }
   };
 
+  const findings = (report?.findings ?? []).filter((f) => !installation || f.installation === installation);
+
   return (
     <section>
-      <h2>Doctor</h2>
+      {!installation && <h2>Doctor</h2>}
       <div className="row">
         <button onClick={run} disabled={running}>{running ? "Checking…" : report ? "Check again" : "Run checks"}</button>
         {report && (
@@ -48,11 +50,11 @@ export default function Doctor({ onError }: { onError: (message: string) => void
           </span>
         )}
       </div>
-      {report && report.findings.length === 0 && <p className="muted">No problems found.</p>}
-      {report && report.findings.length > 0 && (
+      {report && findings.length === 0 && <p className="muted">No problems found.</p>}
+      {report && findings.length > 0 && (
         <table>
           <tbody>
-            {report.findings.map((f, i) => (
+            {findings.map((f, i) => (
               <Fragment key={`${f.code}:${f.subject}`}>
                 <tr onClick={() => setOpen(open === i ? null : i)}>
                   <td><span className={`dot ${DOT[f.severity]}`} /> {f.severity}</td>
