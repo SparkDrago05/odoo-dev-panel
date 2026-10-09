@@ -1,6 +1,6 @@
 [package]
 name = "odoo-dev-panel"
-version = "0.11.0"
+version = "0.12.0"
 description = "Odoo Dev Panel"
 license = "Apache-2.0"
 authors = ["Huzaifa Farooq <huzaifa.farooq05@gmail.com>"]
