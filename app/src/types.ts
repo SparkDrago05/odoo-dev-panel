@@ -84,3 +84,44 @@ export type Service = {
   name: string; path: string; user: string | null; config: string | null; exec_start: string;
   active_state: string | null; sub_state: string | null; result: string | null; enabled: string | null;
 };
+
+// ---------- Git repositories (W1-W12) ----------
+
+export type RepoProblem = {
+  code: string; level: "info" | "warn" | "error"; title: string; detail: string; commands: string[]; heuristic: boolean;
+};
+export type RepoState = {
+  path: string; ok: boolean; owner: string | null; foreign: boolean; branch: string | null; head: string | null;
+  detached: boolean; upstream: string | null; ahead: number | null; behind: number | null; staged: number;
+  modified: number; untracked: number; conflicted: number; shallow: boolean; worktree: boolean;
+  remotes: Record<string, string>; subject: string | null; committed: string | null; error: string | null;
+  problems: RepoProblem[]; dirty: boolean;
+};
+export type RepoAssoc = {
+  purpose?: string; addons?: boolean; preferred_branch?: string; expected_version?: string; destination?: string;
+  group?: string; bulk?: boolean;
+};
+export type RepoLink = {
+  root: string; relative: string | null; sources: string[]; assoc: RepoAssoc | null; alignment: RepoProblem | null;
+};
+export type Repo = {
+  path: string; real: string; name: string; gitdir: string | null; purpose: string; registered: boolean;
+  missing?: boolean; installations: RepoLink[]; state: RepoState | null;
+};
+export type RepoOp = "fetch" | "pull" | "switch" | "checkout" | "clone";
+export type RepoPlanItem = { repo: string; title: string; commands: string[]; skip: string | null; problems: RepoProblem[]; level: "ok" | "warn" | "fail" };
+export type RepoPlan = {
+  op: RepoOp; ok: boolean; items: RepoPlanItem[]; checks: Check[]; steps: Step[];
+  counts: { run: number; skip: number };
+};
+export type RepoResult = {
+  repo: string; commands: string[]; status: "ok" | "failed" | "skipped" | "cancelled"; output: string;
+  problem: RepoProblem | null; reason: string | null; changed_files?: number; changed_modules?: string[];
+  addons_path_entry?: string | null;
+};
+export type RepoDiff = {
+  repo: string; files: { path: string; index: string; worktree: string }[]; truncated: boolean;
+  diff: string | null; diff_truncated?: boolean;
+  incoming: { sha: string; author: string; date: string; subject: string }[];
+  outgoing: { sha: string; author: string; date: string; subject: string }[];
+};

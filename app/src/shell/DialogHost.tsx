@@ -6,6 +6,7 @@ import { ModulesDialog } from "../features/Modules";
 import { ConfirmDialog, PasswordDialog } from "../features/Prompts";
 import { ProvisionDialog } from "../features/Provision";
 import { RepairVenvDialog } from "../features/RepairVenv";
+import { RepoAddDialog, RepoDiffDialog, RepoOpDialog } from "../features/RepoDialogs";
 import { RunDialog } from "../features/Run";
 import { useApp } from "../state/app";
 
@@ -32,6 +33,9 @@ export function DialogHost() {
       {d?.kind === "docker-action" && <DockerActionDialog container={d.container} action={d.action} onClose={(changed) => done(changed, "docker")} />}
       {d?.kind === "docker-logs" && <DockerLogsDialog container={d.container} onClose={close} onError={app.onError} />}
       {d?.kind === "docker-shell" && <DockerShellDialog container={d.container} onClose={close} onError={app.onError} />}
+      {d?.kind === "repo-op" && <RepoOpDialog op={d.op} repos={d.repos} bulk={d.bulk} installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
+      {d?.kind === "repo-add" && <RepoAddDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
+      {d?.kind === "repo-diff" && <RepoDiffDialog path={d.path} onClose={close} />}
       {d?.kind === "docker-delete" && <DeleteStackDialog container={d.container} onClose={(changed) => done(changed, "docker", "db")} />}
 
       {app.confirmReq && <ConfirmDialog request={app.confirmReq} onDone={(ok) => { app.confirmReq!.resolve(ok); app.setConfirmReq(null); }} />}

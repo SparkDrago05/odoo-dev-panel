@@ -245,6 +245,27 @@ def root_ledger_tee(ledger: dict, report: Report) -> Report:
     return tee
 
 
+def register_repos(spec: ProvisionSpec, report: Report, phase: str) -> None:
+    """W12: record the provisioned repositories in the Git workspace, so they appear there at once with their
+    purpose and addons path role. Metadata only; a failure here never fails the provision."""
+    from ..git import registry as repos
+
+    entries = [(f"{spec.root}/odoo", "community", spec.odoo_branch, "odoo")]
+    if spec.enterprise_git:
+        entries.append((f"{spec.root}/enterprise", "enterprise", spec.enterprise_branch or f"{spec.version}.0", "enterprise"))
+    entries += [(f"{spec.root}/custom/{r.name}", "custom", r.branch, f"custom/{r.name}") for r in spec.custom]
+    for path, purpose, branch, dest in entries:
+        if not os.path.isdir(f"{path}/.git"):
+            continue
+        fields = {"purpose": purpose, "addons": True, "destination": dest, "expected_version": f"{spec.version}.0"}
+        if branch:
+            fields["preferred_branch"] = branch
+        try:
+            repos.register(path, spec.root, fields)
+        except (repos.RegistryError, OSError) as exc:
+            _emit(report, phase, "output", f"could not record {path} in the repository list: {exc}")
+
+
 async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner = sudo_runner,
                     sec: plan.Secrets | None = None) -> None:
     """Run all phases. Raises ProvisionError on the first failure; the receipt then says `incomplete`."""
@@ -308,6 +329,7 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
         for repo in spec.custom:
             dest = f"{spec.root}/custom/{repo.name}"
             await fetch_tree(report, phase, dest, "__manifest__.py", clone(repo.url, repo.branch, dest), f"custom repository {repo.name}")
+        register_repos(spec, report, phase)
         done(phase)
         _emit(report, phase, "ok")
 

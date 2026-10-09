@@ -1,5 +1,5 @@
 import {
-  Boxes, Copy, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
+  Boxes, Copy, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ModulesPanel } from "../features/Modules";
@@ -14,11 +14,13 @@ import { Tabs } from "../ui/Tabs";
 import { ago, Badge, Callout, Dot, EmptyState, Field, KV, Stat } from "../ui/primitives";
 import { View, ViewHead, Panel } from "./common";
 import { EmbeddedDatabases } from "./Databases";
+import { useRepoWorkspace } from "./Repositories";
 import { FindingList } from "./Doctor";
 
 const TABS: { id: InstallTab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <LayoutGrid /> },
   { id: "instances", label: "Instances", icon: <FileCog /> },
+  { id: "repos", label: "Repositories", icon: <FolderGit2 /> },
   { id: "databases", label: "Databases", icon: <Database /> },
   { id: "modules", label: "Modules", icon: <Boxes /> },
   { id: "doctor", label: "Diagnostics", icon: <HeartPulse /> },
@@ -67,12 +69,14 @@ export function InstanceMenu({ inst }: { inst: Instance }) {
   );
 }
 
-export function InstallationView({ root, tab = "overview" }: { root: string; tab?: InstallTab }) {
+export function InstallationView({ root, tab = "overview", repo }: { root: string; tab?: InstallTab; repo?: string }) {
   const app = useApp();
   const { snap, doctor } = app;
   const inst = snap?.installations.find((i) => i.root === root);
   const configs = snap?.instances.filter((i) => i.installation === root) ?? [];
   const [modulesOf, setModulesOf] = useState(configs[0]?.path ?? "");
+  const repoWs = useRepoWorkspace({ root, selected: repo, enabled: tab === "repos",
+    onSelect: (p) => app.nav({ view: "installation", root, tab: "repos", repo: p }) });
   useEffect(() => { if (!configs.some((c) => c.path === modulesOf)) setModulesOf(configs[0]?.path ?? ""); }, [root, configs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!snap) return <View><EmptyState icon={<FolderTree />} title="Scanning…" /></View>;
@@ -92,6 +96,7 @@ export function InstallationView({ root, tab = "overview" }: { root: string; tab
   const setTab = (t: InstallTab) => app.nav({ view: "installation", root, tab: t });
 
   return (
+    <>
     <View>
       <ViewHead icon={<span className="mono strong" style={{ fontSize: 13 }}>{shortVersion(inst.version)}</span>}
         title={<>Odoo {inst.version ?? "?"} <span className="dim" style={{ fontWeight: 500 }}>· {installLabel(inst)}</span></>}
@@ -157,6 +162,8 @@ export function InstallationView({ root, tab = "overview" }: { root: string; tab
         )
       )}
 
+      {tab === "repos" && repoWs.body}
+
       {tab === "databases" && <EmbeddedDatabases root={root} />}
 
       {tab === "modules" && (
@@ -182,6 +189,8 @@ export function InstallationView({ root, tab = "overview" }: { root: string; tab
         </Panel>
       )}
     </View>
+    {tab === "repos" && repoWs.inspector}
+    </>
   );
 }
 

@@ -370,6 +370,158 @@ def cmd_services(args) -> int:
         return 2
 
 
+def _repo_line(r: dict) -> str:
+    st = r.get("state") or {}
+    flags = []
+    if st.get("dirty"):
+        flags.append("dirty")
+    if st.get("untracked"):
+        flags.append(f"{st['untracked']} untracked")
+    if st.get("ahead") or st.get("behind"):
+        flags.append(f"+{st.get('ahead') or 0}/-{st.get('behind') or 0}")
+    for key in ("detached", "shallow", "foreign", "worktree"):
+        if st.get(key):
+            flags.append(key)
+    where = ", ".join(i["relative"] or i["root"] for i in r["installations"]) or "-"
+    if not st:
+        return f"{r['path']}  [{r['purpose']}]  ({where})"
+    branch = st.get("branch") or (st.get("head") or "")[:12] or "-"
+    return f"{r['path']}  [{r['purpose']}]  {branch}  {' '.join(flags) or 'clean'}  ({where})"
+
+
+def _print_plan(p: dict) -> None:
+    for c in p["checks"]:
+        print(f"  [{c['status']:4}] {c['detail']}")
+    for s in p["steps"]:
+        print(f"  {s['title']}")
+        for line in s["commands"]:
+            print(f"    $ {line}")
+    print(f"  {p['counts']['run']} to run, {p['counts']['skip']} skipped")
+
+
+def cmd_repo(args) -> int:
+    """W1-W10: Git repositories of the discovered installations."""
+    from .discover import scan
+    from .git import api, opener, ops, workspace
+
+    snap = scan.scan(with_databases=False)
+    sub = args.repo_command
+    try:
+        if sub == "list":
+            data = workspace.listing(snap, installation=args.installation, with_state=not args.no_state)
+            if args.json:
+                _print(data, True)
+                return 0
+            if not data["repos"]:
+                print("No Git repositories found in the discovered installations.")
+            for r in data["repos"]:
+                print(_repo_line(r))
+                for prob in (r.get("state") or {}).get("problems", []):
+                    if prob["level"] != "info":
+                        print(f"    {prob['level']}: {prob['title']}" + (" (heuristic)" if prob["heuristic"] else ""))
+            return 0
+        if sub == "show":
+            data = workspace.show(args.path, snap)
+            if args.json:
+                _print(data, True)
+                return 0
+            print(_repo_line(data))
+            st = data["state"]
+            for name, url in st["remotes"].items():
+                print(f"  remote {name}: {url}")
+            print(f"  upstream: {st['upstream'] or '-'}   last commit: {st['subject'] or '-'} ({st['committed'] or '-'})")
+            for prob in st["problems"]:
+                print(f"  {prob['level']}: {prob['title']}. {prob['detail']}")
+                for c in prob["commands"]:
+                    print(f"    $ {c}")
+            return 0
+        if sub == "diff":
+            data = workspace.diff(args.path, snap, args.file)
+            if args.json:
+                _print(data, True)
+                return 0
+            if data["diff"] is not None:
+                print(data["diff"], end="")
+                return 0
+            for f in data["files"]:
+                print(f"{(f['index'] or ' ')}{(f['worktree'] or ' ')} {f['path']}")
+            for key in ("incoming", "outgoing"):
+                for c in data[key]:
+                    print(f"{key[:2]} {c['sha']} {c['subject']}")
+            return 0
+        if sub == "open":
+            print(shlex.join(opener.open_path(workspace.resolve(args.path, snap)["path"], args.target)))
+            return 0
+        if sub == "add":
+            if args.path:
+                out = api.register_existing({"path": os.path.abspath(args.path), "installation": args.installation,
+                                             "fields": _assoc_fields(args)}, snap)
+                print(f"registered {out['repo']}" + (f" for {args.installation}" if args.installation else ""))
+                return 0
+            params = {"installation": args.installation, "url": args.url, "destination": args.dest, "ref": args.ref,
+                      "shallow": not args.full, "fields": _assoc_fields(args)}
+            plan = api.plan("clone", params, snap)
+        elif sub == "forget":
+            ok = api.forget({"path": os.path.abspath(args.path), "installation": args.installation})
+            print("forgotten (no files were touched)" if ok else "not registered")
+            return 0
+        elif sub in ("fetch", "pull"):
+            params = {"bulk": True, "installation": args.installation} if args.bulk else \
+                {"repos": [os.path.abspath(p) for p in args.paths]}
+            plan = api.plan(sub, params, snap)
+        elif sub == "switch":
+            plan = api.plan("switch", {"repo": os.path.abspath(args.path), "branch": args.branch,
+                                       "fetch_branch": args.fetch_branch}, snap)
+        else:
+            plan = api.plan("checkout", {"repo": os.path.abspath(args.path), "ref": args.ref, "confirm": args.confirm}, snap)
+    except (api.ApiError, api.NotFound, LookupError, opener.OpenError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    data = plan.as_dict()
+    if args.plan:
+        _print(data, args.json) if args.json else _print_plan(data)
+        return 0 if plan.ok else 1
+    if not args.json:
+        _print_plan(data)
+    if not plan.ok:
+        print("odp: nothing can run; see the checks above", file=sys.stderr)
+        return 1
+    if not args.yes and input("Run now? [y/N] ").strip().lower() != "y":
+        return 1
+
+    def report(event: dict) -> None:
+        if not args.json and event["status"] == "output":
+            print(f"  {event['text']}")
+        elif not args.json and event["status"] == "start":
+            print(f"== {event['text']}")
+
+    try:
+        result = asyncio.run(ops.run_plan(plan, report))
+    except KeyboardInterrupt:
+        return 130
+    if args.json:
+        _print(result, True)
+    else:
+        for r in result["results"]:
+            why = (r["problem"] or {}).get("title") or r["reason"] or ""
+            print(f"{r['status']:9} {r['repo']}  {why}")
+            if r.get("changed_modules"):
+                print(f"          changed modules (review before upgrading): {', '.join(r['changed_modules'])}")
+            if r.get("addons_path_entry"):
+                print(f"          add to addons_path if wanted: {r['addons_path_entry']}")
+        print(", ".join(f"{v} {k}" for k, v in result["counts"].items() if v))
+    return 0 if not result["counts"]["failed"] else 1
+
+
+def _assoc_fields(args) -> dict:
+    fields = {"purpose": args.purpose, "group": args.group, "preferred_branch": args.preferred_branch}
+    if args.no_addons:
+        fields["addons"] = False
+    if args.no_bulk:
+        fields["bulk"] = False
+    return {k: v for k, v in fields.items() if v is not None}
+
+
 def cmd_discover(args) -> int:
     from pathlib import Path
 
@@ -1075,6 +1227,58 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("-n", "--lines", type=int, default=200)
     logs.add_argument("--since")
 
+    repo = sub.add_parser("repo", help="Git repositories of the installations: list, show, diff, add, fetch, pull, switch").add_subparsers(
+        dest="repo_command", required=True
+    )
+    r = repo.add_parser("list", help="repositories with branch, changes and sync state (read-only)")
+    r.add_argument("--installation", help="only this installation root")
+    r.add_argument("--no-state", action="store_true", help="skip git status (faster)")
+    r.add_argument("--json", action="store_true")
+    r = repo.add_parser("show", help="one repository: remotes, upstream, problems and suggested commands")
+    r.add_argument("path")
+    r.add_argument("--json", action="store_true")
+    r = repo.add_parser("diff", help="changed files, incoming/outgoing commits, or the diff of one FILE")
+    r.add_argument("path")
+    r.add_argument("file", nargs="?")
+    r.add_argument("--json", action="store_true")
+    r = repo.add_parser("open", help="open the repository in the IDE, a terminal or the file manager")
+    r.add_argument("path")
+    r.add_argument("target", choices=("ide", "terminal", "files"))
+    r = repo.add_parser("add", help="clone a repository into an installation (--url, --dest) or register one (--path)")
+    r.add_argument("installation", nargs="?", help="installation root, e.g. /opt/odoo19")
+    src = r.add_mutually_exclusive_group(required=True)
+    src.add_argument("--url", help="SSH or HTTPS Git URL; no passwords or tokens in it")
+    src.add_argument("--path", help="an existing local repository")
+    r.add_argument("--dest", help="folder relative to the installation root, e.g. custom/cms/admissions")
+    r.add_argument("--ref", help="branch, tag or commit to check out")
+    r.add_argument("--full", action="store_true", help="full history instead of a shallow clone")
+    r.add_argument("--purpose", choices=("community", "enterprise", "themes", "custom", "other"))
+    r.add_argument("--group", help="project group label")
+    r.add_argument("--preferred-branch")
+    r.add_argument("--no-addons", action="store_true", help="does not contribute to addons_path")
+    r.add_argument("--no-bulk", action="store_true", help="leave out of bulk fetch/pull")
+    r = repo.add_parser("forget", help="remove a repository (or one association) from the list; files stay")
+    r.add_argument("path")
+    r.add_argument("--installation")
+    for name, text in (("fetch", "git fetch --prune"), ("pull", "git pull --ff-only; skips dirty, diverged, detached")):
+        r = repo.add_parser(name, help=text)
+        r.add_argument("paths", nargs="*")
+        r.add_argument("--bulk", action="store_true", help="every repository selected for bulk operations")
+        r.add_argument("--installation", help="with --bulk: only this installation")
+    r = repo.add_parser("switch", help="switch to a branch; refuses uncommitted changes")
+    r.add_argument("path")
+    r.add_argument("branch")
+    r.add_argument("--fetch-branch", action="store_true", help="fetch the branch first (single-branch clones)")
+    r = repo.add_parser("checkout", help="detached checkout of a tag or commit; needs --confirm REF")
+    r.add_argument("path")
+    r.add_argument("ref")
+    r.add_argument("--confirm", help="type the ref again")
+    for name in ("add", "fetch", "pull", "switch", "checkout"):
+        p = repo.choices[name]
+        p.add_argument("--plan", action="store_true", help="dry run: checks and exact commands")
+        p.add_argument("--yes", action="store_true")
+        p.add_argument("--json", action="store_true")
+
     adopt = sub.add_parser("adopt", help="remember a discovered installation in the registry; changes no Odoo files")
     adopt.add_argument("root")
     adopt.add_argument("--name")
@@ -1277,6 +1481,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_adopt(args)
     if args.command == "discover":
         return cmd_discover(args)
+    if args.command == "repo":
+        if args.repo_command in ("add", "fetch", "pull") and getattr(args, "paths", True) == [] and not args.bulk:
+            print("odp: give repository paths or --bulk", file=sys.stderr)
+            return 2
+        if args.repo_command == "add" and args.url and not (args.installation and args.dest):
+            print("odp: --url needs an installation and --dest", file=sys.stderr)
+            return 2
+        return cmd_repo(args)
     if args.command == "services":
         return cmd_services(args)
     if args.command == "doctor":

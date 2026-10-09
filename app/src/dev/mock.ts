@@ -127,6 +127,34 @@ function parseConf(text: string) {
   return o;
 }
 
+// ---------- Git repositories ----------
+const prob = (code: string, level: string, title: string, detail = "", commands: string[] = [], heuristic = false) => ({ code, level, title, detail, commands, heuristic });
+const repoState = (path: string, o: Json = {}) => ({
+  path, ok: true, owner: "dev", foreign: false, branch: "main", head: "4f1c2aa9d0e3b7c1a2f4", detached: false, upstream: "origin/main",
+  ahead: 0, behind: 0, staged: 0, modified: 0, untracked: 0, conflicted: 0, shallow: false, worktree: false,
+  remotes: { origin: `git@git.example.com:aarsol/${path.split("/").pop()}.git` }, subject: "Merge staging fixes", committed: iso(60 * 26),
+  error: null, problems: [], ...o, dirty: !!((o.staged ?? 0) + (o.modified ?? 0) + (o.conflicted ?? 0)),
+});
+const repo = (root: string, rel: string, purpose: string, st: Json = {}, extra: Json = {}) => {
+  const path = `${root}/${rel}`;
+  return { path, real: path, name: rel.split("/").pop(), gitdir: null, purpose, registered: !!extra.assoc, installations: [{ root, relative: rel, sources: ["root"], assoc: extra.assoc ?? null, alignment: null }], state: repoState(path, st) };
+};
+const repos: any[] = [
+  repo("/opt/odoo19", "odoo", "community", { branch: "19.0", upstream: "origin/19.0", shallow: true, remotes: { origin: "https://github.com/odoo/odoo.git" }, problems: [prob("shallow", "info", "Shallow clone", "History is truncated; ahead/behind counts may be partial.")] }),
+  repo("/opt/odoo19", "enterprise", "enterprise", { branch: "19.0", upstream: "origin/19.0", behind: 3 }),
+  repo("/opt/odoo19", "custom/aarsol/core", "custom", { branch: "staging-19", upstream: "origin/staging-19" }, { assoc: { purpose: "custom", group: "aarsol", bulk: true } }),
+  repo("/opt/odoo19", "custom/cms/admissions", "custom", { branch: "staging-19", upstream: "origin/staging-19", modified: 2, untracked: 1, problems: [prob("dirty", "warn", "Uncommitted changes", "0 staged, 2 modified. Pull and switch are blocked until you commit or stash."), prob("untracked", "info", "1 untracked file(s)", "They are never deleted by the app.")] }),
+  repo("/opt/odoo19", "custom/cms/examinations", "custom", { branch: "staging-19", upstream: "origin/staging-19", behind: 5 }),
+  repo("/opt/odoo19", "custom/hr/payroll", "custom", { branch: "staging-18", upstream: "origin/staging-18", problems: [prob("branch-mismatch", "info", "staging-18 may not match Odoo 19", "The branch name mentions 18. This is a guess from the name.", [], true)] }),
+  repo("/opt/odoo19", "custom/hr/attendance", "custom", { branch: "main", upstream: "origin/main", ahead: 2, behind: 4, problems: [prob("diverged", "warn", "Diverged from upstream", "2 local and 4 upstream commits. Fast-forward is not possible.")] }),
+  repo("/opt/odoo19", "custom/extensions/client_custom", "custom", { branch: null, detached: true, upstream: null, ahead: null, behind: null, remotes: {}, problems: [prob("detached", "warn", "Detached HEAD", "Not on a branch; pull is not possible."), prob("no-remote", "warn", "No remote", "This repository has no remote to fetch from.")] }),
+  repo("/opt/odoo17", "odoo", "community", { branch: "17.0", upstream: "origin/17.0", owner: "odoo17", foreign: true, problems: [prob("not-owner", "info", "Owned by odoo17", "Shown read-only. Fetch, pull and switch run only on repositories you own.")] }),
+  repo("/opt/odoo17", "custom/acme", "custom", { branch: "17.0-dev", upstream: "origin/17.0-dev", behind: 1 }),
+  repo("/opt/odoo18", "enterprise", "enterprise", {}, {}),
+];
+repos[repos.length - 1].state = { ...repoState("/opt/odoo18/enterprise"), ok: false, worktree: true, error: ".git points to /home/odoo/.repositories/enterprise/.git/worktrees/18, which does not exist", problems: [prob("broken-worktree", "error", "Broken worktree", ".git points to a removed repository.", ["# keep the files as a plain folder:\nrm /opt/odoo18/enterprise/.git"])] };
+repos[repos.length - 1].gitdir = "/home/odoo/.repositories/enterprise/.git/worktrees/18";
+
 const plan = (checks: [string, string, string][], steps: [string, string, string[]][]) => ({
   checks: checks.map(([id, status, detail]) => ({ id, status, detail })),
   steps: steps.map(([id, title, commands], i) => ({ id, phase: i + 1, actor: i ? "agent" : "root", title, commands })),
@@ -193,11 +221,84 @@ export function createMock(deliver: Deliver) {
     missing: [], unreadable: ["/opt/containerd"],
   });
 
+
+  const repoPlan = (p: Json) => {
+    const pick: string[] = p.op === "clone" ? [] : p.bulk ? repos.filter((r) => !p.installation || r.installations.some((i: Json) => i.root === p.installation)).map((r) => r.path) : p.repos ?? [p.repo];
+    const items = pick.map((path: string) => {
+      const r = repos.find((x) => x.path === path)!;
+      const s = r.state;
+      let skip: string | null = null;
+      if (!s.ok) skip = s.problems[0]?.title ?? "unreadable";
+      else if (s.foreign) skip = `owned by ${s.owner}; write operations run only on repositories you own`;
+      else if (p.op === "pull" && s.dirty) skip = "has uncommitted changes";
+      else if (p.op === "pull" && s.detached) skip = "detached HEAD (not on a branch)";
+      else if ((p.op === "pull" || p.op === "fetch") && !Object.keys(s.remotes).length) skip = "has no remote";
+      else if (p.op === "pull" && s.ahead && s.behind) skip = `diverged from ${s.upstream} (${s.ahead} ahead, ${s.behind} behind)`;
+      else if (p.op === "switch" && s.dirty) skip = "has uncommitted changes";
+      const cmd = { fetch: `git -C ${path} fetch --prune origin`, pull: `git -C ${path} pull --ff-only --no-rebase`, switch: `git -C ${path} switch --track origin/${p.branch}`, checkout: `git -C ${path} switch --detach ${p.ref}` }[p.op as string];
+      return { repo: path, title: `${p.op} ${r.name}`, commands: skip ? [] : [cmd], skip, problems: s.problems, level: skip ? (p.op === "switch" ? "fail" : "warn") : "ok" };
+    });
+    if (p.op === "clone") {
+      const target = `${p.installation}/${p.destination}`;
+      const bad = /:[^@/]*@/.test(p.url ?? "") ? "the URL contains a password; use an SSH key or a Git credential helper instead" : null;
+      const exists = repos.some((r) => r.path === target);
+      const checks = [
+        { id: "url", status: bad ? "fail" : "ok", detail: bad ?? p.url },
+        { id: "destination", status: exists ? "fail" : "ok", detail: exists ? `${target} is already a repository; add it as an existing repository` : target },
+        { id: "writable", status: "ok", detail: `${p.installation}/custom is writable` },
+        { id: "git", status: "ok", detail: "git is installed" },
+      ];
+      const ok = checks.every((c) => c.status !== "fail");
+      const cmd = `git clone ${p.shallow === false ? "" : "--depth=1 --single-branch --no-tags "}${p.ref ? `--branch ${p.ref} ` : ""}-- ${p.url} ${target}`;
+      return { op: "clone", ok, checks, items: [{ repo: target, title: `Clone into ${p.destination}`, commands: ok ? [cmd] : [], skip: ok ? null : "checks failed", problems: [], level: ok ? "ok" : "fail" }], steps: ok ? [{ id: "clone-1", phase: 1, actor: "dev", title: `Clone into ${p.destination}`, commands: [cmd] }] : [], counts: { run: ok ? 1 : 0, skip: ok ? 0 : 1 }, register: null };
+    }
+    const checks: Json[] = items.filter((i: Json) => i.skip).map((i: Json) => ({ id: i.repo, status: i.level, detail: `${i.repo}: ${i.skip}` }));
+    if (p.op === "checkout") checks.push({ id: "confirm", status: p.confirm === p.ref ? "ok" : "fail", detail: p.confirm === p.ref ? "confirmed" : `type ${p.ref} to confirm a detached checkout` });
+    const runnable = items.filter((i: Json) => !i.skip);
+    return { op: p.op, ok: runnable.length > 0 && !checks.some((c) => c.status === "fail" && c.id === "confirm"), items, checks,
+      steps: runnable.map((i: Json, n: number) => ({ id: `${p.op}-${n + 1}`, phase: n + 1, actor: "dev", title: i.title, commands: i.commands })),
+      counts: { run: runnable.length, skip: items.length - runnable.length }, register: null };
+  };
   const handlers: Record<string, (p: Json) => Json | Promise<Json>> = {
     "app.info": () => ({ version: "0.6.0-dev", user: "dev", socket_dir: "/run/odoo-dev-panel", pid: 1, group: { group: "odoo-dev", exists: true, member: true, active: true } }),
     "agents.list": () => agents,
     "sessions.list": () => [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at)),
     "discover.scan": () => snapshotOf(),
+    "repo.list": (p) => ({ repos: p.installation ? repos.filter((r) => r.installations.some((i: Json) => i.root === p.installation)) : repos, scan_roots: [] }),
+    "repo.show": (p) => repos.find((r) => r.path === p.path),
+    "repo.diff": (p) => {
+      const r = repos.find((x) => x.path === p.path);
+      const files = r?.state.dirty || r?.state.untracked ? [{ path: "adm_core/models/applicant.py", index: "", worktree: "M" }, { path: "adm_core/__manifest__.py", index: "", worktree: "M" }, { path: "notes.txt", index: "?", worktree: "?" }] : [];
+      return { repo: p.path, files, truncated: false, diff: p.file ? `diff --git a/${p.file} b/${p.file}\n--- a/${p.file}\n+++ b/${p.file}\n@@ -12,7 +12,8 @@ class Applicant(models.Model):\n     _name = "adm.applicant"\n-    state = fields.Selection(STATES, default="draft")\n+    state = fields.Selection(STATES, default="new")\n+    merit = fields.Float()\n     name = fields.Char(required=True)\n` : null,
+        incoming: (r?.state.behind ?? 0) > 0 ? [{ sha: "9ab31c0", author: "Ali", date: iso(90), subject: "Fix merit list rounding" }, { sha: "71de0f2", author: "Sara", date: iso(300), subject: "Add exam hall report" }] : [], outgoing: (r?.state.ahead ?? 0) > 0 ? [{ sha: "c0ffee1", author: "dev", date: iso(20), subject: "WIP attendance import" }] : [] };
+    },
+    "repo.plan": (p) => repoPlan(p),
+    "repo.run": (p) => {
+      const pl = repoPlan(p);
+      if (!pl.ok) throw new Error(pl.checks.filter((c: Json) => c.status === "fail").map((c: Json) => c.detail).join("; ") || "nothing can run");
+      const run_id = `run-${++runCounter}`;
+      let t = 300;
+      const results: Json[] = [];
+      for (const it of pl.items) {
+        if (it.skip) { results.push({ repo: it.repo, commands: [], status: "skipped", output: "", problem: null, reason: it.skip }); continue; }
+        const broken = it.repo.endsWith("examinations") && p.op === "fetch";
+        setTimeout(() => emit("git.step", { run_id, step: it.repo, status: "start", text: it.title }), t); t += 400;
+        setTimeout(() => emit("git.step", { run_id, step: it.repo, status: "output", text: broken ? "git@git.example.com: Permission denied (publickey)." : "From git.example.com:aarsol/x\n   4f1c2aa..9ab31c0  main -> origin/main" }), t); t += 400;
+        setTimeout(() => emit("git.step", { run_id, step: it.repo, status: broken ? "fail" : "ok", text: broken ? "Authentication failed" : "" }), t); t += 150;
+        results.push(broken ? { repo: it.repo, commands: it.commands, status: "failed", output: "Permission denied (publickey).", reason: null, problem: prob("auth-failed", "error", "Authentication failed", "The remote refused your credentials. Check that your SSH agent has the right key, or that a Git credential helper is configured for this host.", ["ssh-add -l", "ssh -T git@<host>"]) }
+          : { repo: it.repo, commands: it.commands, status: "ok", output: "", problem: null, reason: null, ...(p.op === "pull" ? { changed_files: 4, changed_modules: ["adm_core", "adm_portal"] } : {}), ...(p.op === "clone" ? { addons_path_entry: it.repo } : {}) });
+      }
+      const counts = { ok: 0, failed: 0, skipped: 0, cancelled: 0 } as Record<string, number>;
+      for (const r of results) counts[r.status]++;
+      setTimeout(() => emit("git.finished", { run_id, ok: true, error: null, op: p.op, results, counts }), t + 200);
+      return { run_id, op: p.op, repos: pl.items.map((i: Json) => i.repo) };
+    },
+    "repo.cancel": () => ({ cancelling: true }),
+    "desktop.pickFile": (p) => new Promise((r) => setTimeout(() => r({ path: p.kind === "archive" ? "/home/dev/Downloads/odoo_enterprise_19.0.latest.zip" : null }), 400)),
+    "repo.register": (p) => ({ repo: p.path, assoc: { installation: p.installation, repo: p.path, ...p.fields } }),
+    "repo.forget": () => ({ forgotten: true }),
+    "repo.open": (p) => ({ argv: ["/usr/bin/code", p.path] }),
+
     "discover.adopt": (p) => { const i = installations.find((x) => x.root === p.root); if (i) i.adopted = !!p.adopt; return true; },
     "agent.start": async (p) => {
       if (!(await askPassword(p.user, "unlock"))) throw new Error("cancelled");

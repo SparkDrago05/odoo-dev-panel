@@ -10,6 +10,7 @@ import { DockerView } from "./views/Docker";
 import { DoctorView } from "./views/Doctor";
 import { HomeView } from "./views/Home";
 import { InstallationView, InstanceView } from "./views/Installation";
+import { RepositoriesView } from "./views/Repositories";
 import { ServicesView } from "./views/Services";
 import { SessionsView } from "./views/Sessions";
 import { SettingsView } from "./views/Settings";
@@ -17,13 +18,14 @@ import { SettingsView } from "./views/Settings";
 function CurrentView({ route }: { route: Route }) {
   switch (route.view) {
     case "home": return <HomeView />;
-    case "installation": return <InstallationView root={route.root} tab={route.tab} />;
+    case "installation": return <InstallationView root={route.root} tab={route.tab} repo={route.repo} />;
     case "instance": return <InstanceView path={route.path} />;
     case "databases": return <DatabasesView root={route.root} db={route.db} />;
     case "sessions": return <SessionsView selectedKey={route.key} />;
     case "doctor": return <DoctorView finding={route.finding} />;
     case "docker": return <DockerView name={route.name} />;
     case "services": return <ServicesView name={route.name} />;
+    case "repos": return <RepositoriesView path={route.path} />;
     case "settings": return <SettingsView />;
   }
 }
@@ -31,7 +33,8 @@ function CurrentView({ route }: { route: Route }) {
 /** Views that show an inspector when something is selected. */
 function hasInspector(r: Route) {
   return (r.view === "instance") || (r.view === "databases" && !!r.db) || (r.view === "doctor" && !!r.finding)
-    || (r.view === "docker" && !!r.name) || (r.view === "services" && !!r.name);
+    || (r.view === "docker" && !!r.name) || (r.view === "services" && !!r.name)
+    || (r.view === "repos" && !!r.path) || (r.view === "installation" && r.tab === "repos" && !!r.repo);
 }
 
 function useShortcuts() {
@@ -49,7 +52,7 @@ function useShortcuts() {
         if (window.innerWidth < 1120) { if (app.drawer) app.setDrawer(false); else app.inspect(); } else app.setPrefs({ inspector: !app.prefs.inspector });
       }
       else if (mod && !e.shiftKey && e.key.toLowerCase() === "j") { e.preventDefault(); app.setPrefs({ dock: !app.prefs.dock }); }
-      else if (mod && !e.shiftKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); app.nav({ view: NAV[Number(e.key) - 1].view } as Route); }
+      else if (mod && !e.shiftKey && /^[1-7]$/.test(e.key)) { e.preventDefault(); app.nav({ view: NAV[Number(e.key) - 1].view } as Route); }
       else if (e.altKey && e.key === "ArrowLeft" && !typing) { e.preventDefault(); app.back(); }
     };
     window.addEventListener("keydown", onKey);

@@ -269,43 +269,8 @@ def check_configs(ctx: Context) -> list[Finding]:
 
 # -- H6 / H7 ------------------------------------------------------------------
 
-REPO_SKIP = {"venv", ".venv", "node_modules", "__pycache__", ".local", ".cache", "filestore", ".npm", "static"}
-
-
-def find_repos(root: str, max_depth: int = 3) -> list[tuple[str, str | None]]:
-    """(repository folder, gitdir of a worktree or None for a normal clone). Does not enter repositories."""
-    result: list[tuple[str, str | None]] = []
-
-    def walk(directory: str, depth: int) -> None:
-        dot_git = os.path.join(directory, ".git")
-        if os.path.isdir(dot_git):
-            result.append((directory, None))
-            return
-        if os.path.isfile(dot_git):
-            try:
-                text = Path(dot_git).read_text(errors="replace").strip()
-            except OSError:
-                return
-            gitdir = text[7:].strip() if text.startswith("gitdir:") else ""
-            if gitdir and not os.path.isabs(gitdir):
-                gitdir = os.path.normpath(os.path.join(directory, gitdir))
-            result.append((directory, gitdir or ""))
-            return
-        if depth >= max_depth:
-            return
-        try:
-            entries = sorted(os.scandir(directory), key=lambda e: e.name)
-        except OSError:
-            return
-        for entry in entries:
-            try:
-                if entry.name not in REPO_SKIP and entry.is_dir(follow_symlinks=False):
-                    walk(entry.path, depth + 1)
-            except OSError:
-                continue
-
-    walk(root, 0)
-    return result
+# Repository discovery is shared with the Git workspace (W1).
+from ..git.discover import REPO_SKIP, find_repos  # noqa: E402,F401
 
 
 def check_git(ctx: Context) -> list[Finding]:

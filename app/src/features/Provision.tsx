@@ -1,4 +1,4 @@
-import { PackagePlus } from "lucide-react";
+import { FolderOpen, PackagePlus } from "lucide-react";
 import { useState } from "react";
 import { rpc } from "../rpc";
 import { useApp } from "../state/app";
@@ -44,6 +44,17 @@ export function ProvisionDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const job = useJob<Done>("provision");
   const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm((f) => ({ ...f, [key]: value }));
+  // Native file chooser through the core (zenity or kdialog, as the developer); the path is still checked in review.
+  const browseArchive = async () => {
+    setError(null);
+    try {
+      const { path } = await rpc.request<{ path: string | null }>("desktop.pickFile",
+        { title: `Odoo ${form.version} Enterprise archive`, kind: "archive", start: form.enterprise_archive.trim() });
+      if (path) set("enterprise_archive", path);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
 
   const review = async () => {
     setBusy(true); setError(null);
@@ -119,8 +130,11 @@ export function ProvisionDialog({ onClose }: { onClose: () => void }) {
             </Field>
           )}
           {form.enterprise === "archive" && (
-            <Field label="Enterprise archive path" hint=".zip or .tar.*">
-              <input className="mono" value={form.enterprise_archive} placeholder="/home/you/enterprise-17.0.zip" onChange={(e) => set("enterprise_archive", e.target.value)} />
+            <Field label="Enterprise archive path" hint=".zip or .tar.*; checked during review">
+              <div className="row tight">
+                <input className="mono grow" value={form.enterprise_archive} placeholder="/home/you/enterprise-17.0.zip" onChange={(e) => set("enterprise_archive", e.target.value)} />
+                <button type="button" className="btn" onClick={browseArchive}><FolderOpen />Browse…</button>
+              </div>
             </Field>
           )}
           <Field label="Custom addon repositories" hint="one per line: [NAME=]URL[#BRANCH]">

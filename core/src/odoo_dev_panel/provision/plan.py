@@ -64,10 +64,10 @@ def render_conf(spec: ProvisionSpec, sec: Secrets, now: datetime | None = None) 
 
 
 def clone_command(url: str, branch: str | None, dest: str) -> str:
-    cmd = ["git", "clone", "--depth=1", "--single-branch", "--no-tags"]
-    if branch:
-        cmd += ["--branch", branch]
-    return " ".join(q(part) for part in [*cmd, url, dest])
+    """Shallow clone, built by the same code as the Git workspace (W12)."""
+    from ..git.runner import clone_argv
+
+    return " ".join(q(part) for part in clone_argv(url, dest, branch) if part != "--")
 
 
 def requirements_files(spec: ProvisionSpec) -> list[str]:

@@ -37,6 +37,7 @@ function useCrumbs(): { label: string; to?: Route }[] {
     case "doctor": return [{ label: "Doctor" }];
     case "docker": return [{ label: "Docker", to: { view: "docker" } }, ...(route.name ? [{ label: route.name }] : [])];
     case "services": return [{ label: "Services", to: { view: "services" } }, ...(route.name ? [{ label: route.name }] : [])];
+    case "repos": return [{ label: "Repositories", to: { view: "repos" } }, ...(route.path ? [{ label: route.path.split("/").filter(Boolean).pop() ?? route.path }] : [])];
     case "settings": return [{ label: "Settings" }];
   }
 }

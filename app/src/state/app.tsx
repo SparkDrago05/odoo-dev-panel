@@ -4,16 +4,17 @@ import type { Agent, AppInfo, Container, DbAction, DoctorReport, Session, Snapsh
 
 // ---------- Navigation ----------
 
-export type InstallTab = "overview" | "instances" | "databases" | "modules" | "doctor";
+export type InstallTab = "overview" | "instances" | "repos" | "databases" | "modules" | "doctor";
 export type Route =
   | { view: "home" }
-  | { view: "installation"; root: string; tab?: InstallTab }
+  | { view: "installation"; root: string; tab?: InstallTab; repo?: string }
   | { view: "instance"; path: string }
   | { view: "databases"; root?: string; db?: string }
   | { view: "sessions"; key?: string }
   | { view: "doctor"; finding?: string }
   | { view: "docker"; name?: string }
   | { view: "services"; name?: string }
+  | { view: "repos"; path?: string }
   | { view: "settings" };
 
 export const sessionKey = (s: { user: string; id: string }) => `${s.user}/${s.id}`;
@@ -34,7 +35,10 @@ export type DialogSpec =
   | { kind: "docker-action"; container: Container; action: DockerAction }
   | { kind: "docker-logs"; container: Container }
   | { kind: "docker-shell"; container: Container }
-  | { kind: "docker-delete"; container: Container };
+  | { kind: "docker-delete"; container: Container }
+  | { kind: "repo-op"; op: "fetch" | "pull" | "switch" | "checkout"; repos?: string[]; bulk?: boolean; installation?: string }
+  | { kind: "repo-add"; installation: string }
+  | { kind: "repo-diff"; path: string };
 
 // ---------- Preferences ----------
 

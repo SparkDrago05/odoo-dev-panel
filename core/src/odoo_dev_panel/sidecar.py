@@ -33,6 +33,7 @@ class Sidecar:
         self._purpose = "unlock"
         self._jobs: dict[str, asyncio.Task] = {}  # one provision and one repair at a time
         self._owners: tuple[float, set[str]] | None = None
+        self._git_run: tuple[str, list[bool]] | None = None  # running repo job and its cancel flag
 
     # -- agent connections ------------------------------------------------
 
@@ -142,6 +143,16 @@ class Sidecar:
             "services.journal": self.h_services_journal,
             "services.show": self.h_services_show,
             "discover.adopt": self.h_adopt,
+            "repo.list": self.h_repo_list,
+            "repo.show": self.h_repo_show,
+            "repo.diff": self.h_repo_diff,
+            "repo.plan": self.h_repo_plan,
+            "repo.run": self.h_repo_run,
+            "repo.cancel": self.h_repo_cancel,
+            "repo.register": self.h_repo_register,
+            "repo.forget": self.h_repo_forget,
+            "repo.open": self.h_repo_open,
+            "desktop.pickFile": self.h_pick_file,
             "group.join": self.h_group_join,
             "debug.print": self.h_debug_print,
         }
@@ -388,6 +399,140 @@ class Sidecar:
 
         self._jobs[kind] = asyncio.create_task(job())
         return run_id
+
+    # -- W1-W10: Git repositories -------------------------------------------
+
+    async def _snap(self) -> dict:
+        from .discover import scan
+
+        return await asyncio.to_thread(scan.scan, None, False)
+
+    @staticmethod
+    def _git_error(exc: Exception) -> rpc.RpcError:
+        from .git import api
+
+        if isinstance(exc, (api.NotFound, LookupError)):
+            return rpc.RpcError(rpc.NOT_FOUND, str(exc))
+        return rpc.RpcError(rpc.INVALID_PARAMS, str(exc))
+
+    async def h_repo_list(self, params, _conn):
+        """Repositories of the discovered installations with live Git state. ``state: false`` skips git status."""
+        from .git import registry, workspace
+
+        params = params or {}
+        inst = params.get("installation")
+        if inst is not None and not isinstance(inst, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "installation is a root path")
+        try:
+            return await asyncio.to_thread(workspace.listing, await self._snap(), None, inst, params.get("state", True) is not False)
+        except registry.RegistryError as exc:
+            raise rpc.RpcError(rpc.INTERNAL_ERROR, str(exc)) from exc
+
+    async def h_repo_show(self, params, _conn):
+        from .git import workspace
+
+        path = (params or {}).get("path")
+        if not isinstance(path, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "path is required")
+        try:
+            return await asyncio.to_thread(workspace.show, path, await self._snap())
+        except LookupError as exc:
+            raise self._git_error(exc) from exc
+
+    async def h_repo_diff(self, params, _conn):
+        from .git import workspace
+
+        path, file = (params or {}).get("path"), (params or {}).get("file")
+        if not isinstance(path, str) or file is not None and not isinstance(file, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "path is required; file is text")
+        try:
+            return await asyncio.to_thread(workspace.diff, path, await self._snap(), file)
+        except LookupError as exc:
+            raise self._git_error(exc) from exc
+
+    async def _repo_plan(self, params):
+        from .git import api
+
+        params = params or {}
+        try:
+            return await asyncio.to_thread(api.plan, params.get("op"), params, await self._snap())
+        except (api.ApiError, LookupError) as exc:
+            raise self._git_error(exc) from exc
+
+    async def h_repo_plan(self, params, _conn):
+        """Dry run of fetch, pull, switch, checkout or clone: per-repository checks and the exact commands."""
+        return (await self._repo_plan(params)).as_dict()
+
+    async def h_repo_run(self, params, _conn):
+        """Run a repository plan in the background, one repository at a time. Progress as git.step, the end as
+        git.finished with a result per repository (ok, failed, skipped, cancelled)."""
+        from .git import ops
+
+        plan = await self._repo_plan(params)
+        if not plan.ok:
+            failed = [c["detail"] for c in plan.checks if c["status"] == "fail"] or ["nothing can run"]
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(failed))
+        flag = [False]
+
+        async def work(report) -> dict:
+            return await ops.run_plan(plan, report, lambda: flag[0])
+
+        run_id = self._start_job("git", work, {"op": plan.op})
+        self._git_run = (run_id, flag)
+        return {"run_id": run_id, "op": plan.op, "repos": [i.repo for i in plan.items]}
+
+    async def h_repo_cancel(self, params, _conn):
+        """Stop after the repository that is running now. A running Git command is never killed."""
+        run_id = (params or {}).get("run_id")
+        if not self._git_run or self._git_run[0] != run_id:
+            raise rpc.RpcError(rpc.NOT_FOUND, "no such repository job")
+        self._git_run[1][0] = True
+        return {"cancelling": True}
+
+    async def h_repo_register(self, params, _conn):
+        """Add an existing repository (and its association to an installation). Writes repositories.json only."""
+        from .git import api
+
+        try:
+            return await asyncio.to_thread(api.register_existing, params or {}, await self._snap())
+        except (api.ApiError, LookupError) as exc:
+            raise self._git_error(exc) from exc
+
+    async def h_repo_forget(self, params, _conn):
+        from .git import api
+
+        try:
+            return {"forgotten": await asyncio.to_thread(api.forget, params or {})}
+        except api.ApiError as exc:
+            raise self._git_error(exc) from exc
+
+    async def h_repo_open(self, params, _conn):
+        from .git import opener, workspace
+
+        params = params or {}
+        path = params.get("path")
+        if not isinstance(path, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "path is required")
+        try:
+            row = await asyncio.to_thread(workspace.resolve, path, await self._snap())
+            return {"argv": opener.open_path(row["path"], params.get("target", "ide"))}
+        except LookupError as exc:
+            raise self._git_error(exc) from exc
+        except opener.OpenError as exc:
+            raise rpc.RpcError(rpc.UNAVAILABLE, str(exc)) from exc
+
+    async def h_pick_file(self, params, _conn):
+        """Native file chooser as the developer. ``{path: null}`` when cancelled."""
+        from . import desktop
+
+        params = params or {}
+        title, kind, start = params.get("title") or "Choose a file", params.get("kind") or "any", params.get("start") or ""
+        if not all(isinstance(v, str) for v in (title, kind, start)):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "title, kind and start are text")
+        try:
+            return {"path": await desktop.pick_file(title, kind, start)}
+        except desktop.PickError as exc:
+            raise rpc.RpcError(rpc.UNAVAILABLE, str(exc)) from exc
 
     async def h_doctor(self, params, _conn):
         from . import doctor

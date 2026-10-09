@@ -1,6 +1,6 @@
 import * as RD from "@radix-ui/react-dialog";
 import {
-  Activity, Boxes, Container, Copy, CornerDownLeft, Database, FileCog, FolderTree, GitCompare, Moon, PanelBottom, PanelLeft, PanelRight, Pencil,
+  Activity, Boxes, Container, Copy, CornerDownLeft, Database, FileCog, FolderGit2, FolderTree, GitCompare, Moon, PanelBottom, PanelLeft, PanelRight, Pencil,
   Play, Plus, RefreshCw, Search, Server, Settings, Square, Stethoscope, Sun, TerminalSquare,
 } from "lucide-react";
 import { motion } from "motion/react";
@@ -46,6 +46,8 @@ function useCommands(): Command[] {
     for (const i of snap?.installations ?? []) {
       const label = installLabel(i);
       c.push({ id: `inst-${i.root}`, group: "Installations", label: `Odoo ${i.version ?? "?"} · ${label}`, detail: i.root, icon: <FolderTree />, keywords: "installation open", run: () => nav({ view: "installation", root: i.root }) });
+      c.push({ id: `repos-${i.root}`, group: "Repositories", label: `Repositories of ${label}`, detail: i.root, icon: <FolderGit2 />, keywords: "git branch", run: () => nav({ view: "installation", root: i.root, tab: "repos" }) });
+      c.push({ id: `repo-add-${i.root}`, group: "Repositories", label: `Add repository to ${label}…`, detail: "clone or register", icon: <FolderGit2 />, keywords: "git clone", run: () => app.setDialog({ kind: "repo-add", installation: i.root }) });
       c.push({ id: `dbs-${i.root}`, group: "Databases", label: `Databases of ${label}`, detail: i.root, icon: <Database />, run: () => nav({ view: "databases", root: i.root }) });
       if (i.venv_ok === false) c.push({ id: `repair-${i.root}`, group: "Fix", label: `Repair venv of ${label}`, detail: i.root, icon: <Stethoscope />, run: () => app.setDialog({ kind: "repair-venv", root: i.root }) });
     }
@@ -72,6 +74,8 @@ function useCommands(): Command[] {
       { id: "doctor", group: "Actions", label: "Run Doctor checks", icon: <Stethoscope />, keywords: "diagnostics health", run: () => { nav({ view: "doctor" }); app.runDoctor(); } },
       { id: "compare", group: "Actions", label: "Compare environments…", icon: <GitCompare />, keywords: "diff", run: () => app.setDialog({ kind: "compare" }) },
       { id: "rescan", group: "Actions", label: "Scan for installations again", icon: <RefreshCw />, keywords: "discover refresh", run: () => app.scan() },
+      { id: "repo-fetch-all", group: "Actions", label: "Fetch all repositories…", icon: <FolderGit2 />, keywords: "git fetch bulk", run: () => app.setDialog({ kind: "repo-op", op: "fetch", bulk: true }) },
+      { id: "repo-pull-all", group: "Actions", label: "Pull all repositories (fast-forward)…", icon: <FolderGit2 />, keywords: "git pull bulk update", run: () => app.setDialog({ kind: "repo-op", op: "pull", bulk: true }) },
       { id: "services", group: "Actions", label: "systemd services", icon: <Server />, run: () => nav({ view: "services" }) },
       { id: "theme", group: "View", label: document.documentElement.dataset.theme === "light" ? "Dark theme" : "Light theme", icon: document.documentElement.dataset.theme === "light" ? <Moon /> : <Sun />, keywords: "appearance", run: () => app.setPrefs({ theme: document.documentElement.dataset.theme === "light" ? "dark" : "light" }) },
       { id: "sidebar", group: "View", label: "Toggle sidebar", detail: "Ctrl+B", icon: <PanelLeft />, run: () => app.setPrefs({ sidebarCollapsed: !app.prefs.sidebarCollapsed }) },

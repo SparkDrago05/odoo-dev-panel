@@ -176,6 +176,20 @@ def overlay(full: dict, states: dict[str, dict], series: str | None = None) -> d
     return full
 
 
+def annotate_repos(full: dict) -> None:
+    """W12: the Git repository (work tree folder) each module lives in, or None. One lookup per addons_path entry
+    and module folder; no Git command runs."""
+    from .git.discover import enclosing_repo
+
+    cache: dict[str, str | None] = {}
+    for info in full["modules"].values():
+        folder = info["path"]
+        if folder not in cache:
+            hit = enclosing_repo(folder)
+            cache[folder] = hit[0] if hit else None
+        info["repo"] = cache[folder]
+
+
 def for_config(path: str, snapshot: dict, name: str | None = None, depth: int | None = None,
                extra: list[str] | None = None) -> dict:
     """Scan the addons_path of the discovered config at ``path`` plus ``<source>/odoo/addons``, build the graph
@@ -196,6 +210,7 @@ def for_config(path: str, snapshot: dict, name: str | None = None, depth: int | 
         if folder not in entries:
             entries.append(folder)
     full = graph(scan(entries))
+    annotate_repos(full)
     full["addons_paths"] = entries
     full["series"] = home.get("version") if home else None
     full["installation"] = home["root"] if home else None

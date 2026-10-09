@@ -666,3 +666,25 @@ textarea.config { width: 100%; min-height: 420px; font: 12.5px/1.6 var(--font-mo
   .split.sessions { grid-template-columns: 1fr; grid-template-rows: minmax(200px, 40%) 1fr; }
 }
 .dialog:focus, .dialog:focus-visible, .palette:focus-visible { outline: none; }
+
+/* ---------- Repositories ---------- */
+.repo-badges { justify-content: flex-end; max-width: 55%; }
+.repo-badges .badge svg { width: 11px; height: 11px; }
+.bulk-bar {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-radius: var(--r-md); background: var(--accent-bg); color: var(--accent-text); border: 1px solid var(--border);
+}
+.bad-text { color: var(--danger); }
+.dest-tree { padding: 8px 10px; border-radius: var(--r-md); background: var(--surface-3); border: 1px solid var(--border); line-height: 1.6; }
+.diff-layout { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 12px; min-height: 420px; }
+.diff-layout .list { max-height: 260px; overflow: auto; }
+.diff-view { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--term); overflow: auto; max-height: 60vh; }
+.diff-view .empty { background: var(--surface); height: 100%; }
+pre.diff { margin: 0; padding: 10px 12px; color: var(--term-text); white-space: pre; }
+pre.diff .add { color: var(--success); }
+pre.diff .del { color: var(--danger); }
+pre.diff .hunk { color: var(--info); }
+@media (max-width: 760px) {
+  .diff-layout { grid-template-columns: 1fr; }
+  .repo-badges { max-width: none; }
+}
