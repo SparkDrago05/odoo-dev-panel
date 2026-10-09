@@ -1,6 +1,7 @@
 import { ArrowDownToLine, ChevronDown, ChevronUp, WrapText } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { filterLines, LEVELS, type Level, type LogLine, parseLog } from "./logparse";
+import { rpc } from "../rpc";
+import { filterLines, FRAME, LEVELS, type Level, type LogLine, parseLog } from "./logparse";
 import { CopyButton } from "./primitives";
 
 const LINE = 18;
@@ -20,6 +21,13 @@ function Line({ line, hit, current }: { line: LogLine; hit: boolean; current: bo
     );
   }
   if (line.kind === "step") return <div className={cls}><span className={line.failed ? "fail" : "step"}>{line.text}</span></div>;
+  const m = line.traceback ? FRAME.exec(line.text) : null;
+  if (m) {
+    // Q3: a traceback frame opens the file at that line in the IDE (as the developer)
+    const open = () => rpc.request("debug.open", { file: m[2], line: Number(m[4]) })
+      .catch((e) => window.dispatchEvent(new CustomEvent("odp-error", { detail: String((e as Error).message) })));
+    return <div className={cls}>{m[1]}<button type="button" className="frame-link" title={`Open ${m[2]}:${m[4]} in the IDE`} onClick={open}>{m[2]}</button>{m[3]}{m[4]}{m[5]}</div>;
+  }
   return <div className={cls}>{line.text || " "}</div>;
 }
 

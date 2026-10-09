@@ -195,13 +195,14 @@ def test_flags(major: int | None, mods: list[str], tags: str | None, demo: bool)
 
 
 def test_plan(config: str, snapshot: dict, graph: dict, mods, tags=None, demo: bool = True,
-              now: datetime | None = None) -> dict:
+              now: datetime | None = None, debug: dict | None = None) -> dict:
     mods = _names(mods)
     if tags is not None and (not isinstance(tags, str) or not _TAGS.match(tags)):
         raise ActionError("test tags look like /module, :TestClass.test_method, -slow, post_install")
     database = test_db_name(mods, now)
     major = _series_major(snapshot, config)
-    params = {"db": database, "install": mods, "stop_after_init": True, "extra": test_flags(major, mods, tags or None, demo)}
+    params = {"db": database, "install": mods, "stop_after_init": True, "extra": test_flags(major, mods, tags or None, demo),
+              **{f"debug_{k}": v for k, v in (debug or {}).items() if k in ("port", "wait")}}
     try:
         planned = run.plan(snapshot, config, params)
     except rpc.RpcError as exc:

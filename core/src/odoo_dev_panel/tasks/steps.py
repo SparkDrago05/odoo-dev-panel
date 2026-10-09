@@ -216,16 +216,23 @@ async def _instance_start_plan(step: dict, env) -> dict:
 
     snap = await env.snapshot(False)
     busy = {p["port"] for p in snap["processes"] if p.get("port")}
-    params = {k: step[k] for k in ("http_port", "dev") if step.get(k)}
+    params = {k: step[k] for k in ("http_port", "dev", "debug_port", "debug_wait") if step.get(k)}
     if step.get("database"):
         params["db"] = step["database"]
     try:
         busy |= set(await asyncio.to_thread(run.listening_ports))
-        p = run.plan(snap, step.get("config") or "", params, busy)
+        p = run.plan(snap, step.get("config") or "", params, busy | ({step["debug_port"]} if step.get("debug_port") else set()))
     except rpc.RpcError as exc:
         raise StepError(exc.message) from exc
     port = p["meta"]["port"]
-    return {"checks": [_check("port", "ok", f"serves on http://localhost:{port}")] if port else [],
+    checks = [_check("port", "ok", f"serves on http://localhost:{port}")] if port else []
+    if step.get("debug_port"):
+        from ..debug import launch
+
+        inst = _installation_of(snap, {"config": step.get("config")})
+        checks += launch.common_checks({"port": step["debug_port"], "wait": bool(step.get("debug_wait")),
+                                        "dev": step.get("dev") or []}, inst, busy)
+    return {"checks": checks,
             "commands": [shlex.join(p["argv"])], "identity": _run_as(p["user"]), "raw": p}
 
 
@@ -364,7 +371,7 @@ OPS: dict[str, Op] = {
     "python.validate": Op("Validate the Python environment", {**_DB_TARGET}),
     "python.install": Op("Install Python packages", {**_DB_TARGET, "packages": "list", "missing": "bool"}, gate=True),
     "instance.start": Op("Start an instance", {"config": "text", "database": "text", "http_port": "int",
-                                               "dev": "list"}, ("config",)),
+                                               "dev": "list", "debug_port": "int", "debug_wait": "bool"}, ("config",)),
     "instance.stop": Op("Stop an instance's sessions", {"config": "text"}, ("config",)),
     "command": Op("Run a command", {"argv": "list", "as": "text", "cwd": "text", **_DB_TARGET}, ("argv",),
                   gate=True, always_gate=True),

@@ -29,6 +29,8 @@ class RunSpec:
     dev: list[str] = field(default_factory=list)
     extra: list[str] = field(default_factory=list)
     shell: bool = False  # ``odoo-bin shell``: interactive, needs a PTY and a database
+    debug_port: int | None = None  # Q2: run under debugpy listening on 127.0.0.1:<port>
+    debug_wait: bool = False       # debugpy --wait-for-client
 
     @classmethod
     def from_params(cls, params: dict | None) -> "RunSpec":
@@ -42,6 +44,8 @@ class RunSpec:
             dev=_names(params.get("dev"), "dev", pattern=None),
             extra=list(params.get("extra") or []),
             shell=bool(params.get("shell")),
+            debug_port=params.get("debug_port"),
+            debug_wait=bool(params.get("debug_wait")),
         )
         spec.validate()
         return spec
@@ -62,6 +66,13 @@ class RunSpec:
             raise RpcError(INVALID_PARAMS, "the Odoo shell needs a database")
         if self.shell and (self.update or self.install or self.stop_after_init):
             raise RpcError(INVALID_PARAMS, "the Odoo shell takes no -u, -i or --stop-after-init")
+        if self.debug_port is not None and (not isinstance(self.debug_port, int) or isinstance(self.debug_port, bool)
+                                            or not 1024 <= self.debug_port <= 65535):
+            raise RpcError(INVALID_PARAMS, f"bad debug_port: {self.debug_port} (1024-65535)")
+        if self.debug_port is not None and self.shell:
+            raise RpcError(INVALID_PARAMS, "the Odoo shell is not run under the debugger")
+        if self.debug_wait and self.debug_port is None:
+            raise RpcError(INVALID_PARAMS, "debug_wait needs a debug_port")
 
     @property
     def kind(self) -> str:
@@ -114,6 +125,10 @@ def build_argv(installation: Installation, instance: Instance, spec: RunSpec, po
         raise RpcError(INVALID_PARAMS, f"{installation.root} has no venv")
     odoo_bin = os.path.join(installation.source, "odoo-bin")
     argv = [installation.venv_python, odoo_bin]
+    if spec.debug_port is not None:
+        # localhost only; the listener ends with the process
+        argv = [installation.venv_python, "-m", "debugpy", "--listen", f"127.0.0.1:{spec.debug_port}",
+                *(["--wait-for-client"] if spec.debug_wait else []), odoo_bin]
     if spec.shell:
         # The plain Python console is line based and works with TERM=dumb; IPython is not assumed.
         argv += ["shell", "--shell-interface=python"]
@@ -131,6 +146,9 @@ def build_argv(installation: Installation, instance: Instance, spec: RunSpec, po
     if spec.dev:
         argv.append("--dev=" + ",".join(spec.dev))
     argv += spec.extra
+    if spec.debug_port is not None:
+        # forked workers would not reach the debugger: threaded mode, no cron threads (the config is untouched)
+        argv += ["--workers=0", "--max-cron-threads=0"]
     return argv
 
 
@@ -175,5 +193,7 @@ def plan(snapshot: dict, instance_ref: str, params: dict | None, busy: set[int] 
         "name": f"{instance.name} {spec.kind}" + (f" {spec.db}" if spec.db else ""),
         "pty": spec.shell,
         "meta": {"instance": instance.path, "installation": installation.root, "db": spec.db,
-                 "kind": spec.kind, "port": port, "version": installation.version},
+                 "kind": spec.kind, "port": port, "version": installation.version,
+                 **({"debug": {"host": "127.0.0.1", "port": spec.debug_port, "wait": spec.debug_wait}}
+                    if spec.debug_port is not None else {})},
     }

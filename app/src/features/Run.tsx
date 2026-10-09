@@ -1,4 +1,4 @@
-import { Camera, Play, TerminalSquare } from "lucide-react";
+import { Bug, Camera, Play, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { rpc } from "../rpc";
 import { useApp } from "../state/app";
@@ -54,6 +54,12 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
   const [starting, setStarting] = useState(false);
   const [snapshot, setSnapshot] = useState(false);
   const [status, setStatus] = useState("");
+  const [debug, setDebug] = useState(false);
+  const [debugPort, setDebugPort] = useState("");
+  const [debugWait, setDebugWait] = useState(false);
+  useEffect(() => {
+    if (debug && !debugPort) rpc.request<{ port: number }>("debug.next_port").then((r) => setDebugPort(String(r.port))).catch(() => setDebugPort("5678"));
+  }, [debug, debugPort]);
 
   useEffect(() => { if (fixed) setInstance(fixed); }, [fixed]);
   useEffect(() => { if (!instance && runnable.length) setInstance(runnable[0].path); }, [runnable.length, instance]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -68,15 +74,18 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
   // Mirrors run.build_argv in the core; the port shows as "auto" until the core picks a free one.
   const preview = useMemo(() => {
     if (!current || !installation) return "";
-    const argv = [installation.venv_python ?? `${installation.root}/venv/bin/python`, `${installation.source}/odoo-bin`, "-c", current.path];
+    const python = installation.venv_python ?? `${installation.root}/venv/bin/python`;
+    const argv = debug ? [python, "-m", "debugpy", "--listen", `127.0.0.1:${debugPort || "?"}`, ...(debugWait ? ["--wait-for-client"] : []), `${installation.source}/odoo-bin`, "-c", current.path]
+      : [python, `${installation.source}/odoo-bin`, "-c", current.path];
     if (db) argv.push("-d", db);
     argv.push("--http-port", port || "<auto>");
     if (csv(update).length) argv.push("-u", csv(update).join(","));
     if (csv(install).length) argv.push("-i", csv(install).join(","));
     if (stopAfterInit) argv.push("--stop-after-init");
     if (dev.length) argv.push("--dev=" + dev.join(","));
+    if (debug) argv.push("--workers=0", "--max-cron-threads=0");
     return argv.join(" ");
-  }, [current, installation, db, port, update, install, stopAfterInit, dev]);
+  }, [current, installation, db, port, update, install, stopAfterInit, dev, debug, debugPort, debugWait]);
 
   const start = async (shell = false) => {
     if (!current || !owner) return;
@@ -96,6 +105,7 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
         install: csv(install),
         stop_after_init: stopAfterInit,
         dev,
+        ...(debug ? { debug_port: Number(debugPort), debug_wait: debugWait } : {}),
       });
       await app.startSession(owner, session.id);
       onStarted?.();
@@ -143,6 +153,16 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
           </CheckBox>
         )}
       </div>
+      <div className="row wrap">
+        <CheckBox checked={debug} onChange={setDebug} title="Run under debugpy so an IDE can attach (needs debugpy in the venv: Python tab)">
+          <Bug style={{ width: 13, height: 13, verticalAlign: -2 }} /> Debug with debugpy
+        </CheckBox>
+        {debug && <>
+          <label className="row tight small">port <input className="mono" style={{ width: 80 }} value={debugPort} aria-label="debugpy port" onChange={(e) => setDebugPort(e.target.value.replace(/\D/g, ""))} /></label>
+          <CheckBox checked={debugWait} onChange={setDebugWait}>wait for the IDE</CheckBox>
+        </>}
+      </div>
+      {debug && <span className="small muted">Listens on 127.0.0.1:{debugPort}; any local user can connect while it runs. Adds --workers=0. For a saved VS Code entry, use a preset (instance page, Debug tab).</span>}
       <Field label={<code>--dev</code>}>
         <div className="row tight">
           {DEV_FLAGS.map(([f, hint]) => (
@@ -163,10 +183,10 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
       {oneShot && !stopAfterInit && <span className="small muted">Without --stop-after-init the server keeps serving after the upgrade.</span>}
       {status && <span className="small muted">{status}</span>}
       <div className="row end">
-        <button className="btn" disabled={!agentUp || starting || !db} onClick={() => start(true)} title="odoo-bin shell on the selected database">
+        <button className="btn" disabled={!agentUp || starting || !db || debug} onClick={() => start(true)} title="odoo-bin shell on the selected database">
           <TerminalSquare />Shell
         </button>
-        <button className="btn primary" disabled={!agentUp || starting || (oneShot && !db)} onClick={() => start()}>
+        <button className="btn primary" disabled={!agentUp || starting || (oneShot && !db) || (debug && !debugPort)} onClick={() => start()}>
           <Play />{starting ? "Starting…" : oneShot ? "Run" : "Start"}
         </button>
       </div>

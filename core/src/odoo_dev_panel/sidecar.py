@@ -179,6 +179,15 @@ class Sidecar:
             "profile.import": self.h_profile_import,
             "profile.export": self.h_profile_export,
             "profile.org": self.h_profile_org,
+            "debug.presets": self.h_debug_presets,
+            "debug.next_port": self.h_debug_next_port,
+            "debug.save": self.h_debug_save,
+            "debug.delete": self.h_debug_delete,
+            "debug.plan": self.h_debug_plan,
+            "debug.start": self.h_debug_start,
+            "debug.vscode_plan": self.h_debug_vscode_plan,
+            "debug.vscode_write": self.h_debug_vscode_write,
+            "debug.open": self.h_debug_open,
             "tasks.list": self.h_tasks_list,
             "tasks.ops": self.h_tasks_ops,
             "tasks.read": self.h_tasks_read,
@@ -304,7 +313,8 @@ class Sidecar:
             raise rpc.RpcError(rpc.INVALID_PARAMS, "instance is required")
         snap = await asyncio.to_thread(scan.scan, None, False)
         busy = {p["port"] for p in snap["processes"] if p.get("port")}
-        planned = run.plan(snap, ref, params, busy | set(await asyncio.to_thread(_listening)))
+        debug_port = {params["debug_port"]} if isinstance(params.get("debug_port"), int) else set()
+        planned = run.plan(snap, ref, params, busy | set(await asyncio.to_thread(_listening)) | debug_port)
         conn = await self.agent(planned.pop("user"))
         return await conn.request("session.start", planned)
 
@@ -920,6 +930,123 @@ class Sidecar:
         run_id = self._start_job("python", work, {"kind": p["kind"], "root": (params or {}).get("root"),
                                                   "tool": p.get("tool")})
         return {"run_id": run_id, "kind": p["kind"]}
+
+    # -- Q1-Q4: debugging and testing center ------------------------------------------
+
+    @staticmethod
+    def _debug_call(func, *args):
+        from .debug import launch, presets, vscode
+
+        try:
+            return func(*args)
+        except LookupError as exc:
+            raise rpc.RpcError(rpc.NOT_FOUND, str(exc).strip("'\"")) from exc
+        except (presets.PresetError, launch.LaunchError, vscode.VscodeError) as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_debug_presets(self, params, _conn):
+        """Presets, optionally of one instance (config path) or installation (root)."""
+        from .debug import presets
+
+        p = params or {}
+        try:
+            rows = await asyncio.to_thread(presets.load)
+            error = None
+        except presets.PresetError as exc:
+            rows, error = [], str(exc)
+        if p.get("instance"):
+            rows = [r for r in rows if r.get("instance") == p["instance"]]
+        if p.get("installation"):
+            snap = await self._snap()
+            configs = {i["path"] for i in snap["instances"] if i.get("installation") == p["installation"]}
+            rows = [r for r in rows if r.get("instance") in configs]
+        return {"presets": rows, "file": str(presets.presets_file()), "error": error}
+
+    async def h_debug_next_port(self, params, _conn):
+        from .debug import presets
+
+        return {"port": self._debug_call(presets.next_port, set(await asyncio.to_thread(_listening)))}
+
+    async def h_debug_save(self, params, _conn):
+        from .debug import presets
+
+        p = params or {}
+        return self._debug_call(presets.save, p.get("preset"), bool(p.get("overwrite")))
+
+    async def h_debug_delete(self, params, _conn):
+        from .debug import presets
+
+        return {"deleted": self._debug_call(presets.delete, (params or {}).get("id"))}
+
+    async def _debug_plan(self, params):
+        from .debug import launch, presets
+
+        preset = self._debug_call(presets.get, (params or {}).get("id"))
+        snap = await self._snap()
+        try:
+            return await launch.plan(preset, snap, set(await asyncio.to_thread(_listening)))
+        except launch.LaunchError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_debug_plan(self, params, _conn):
+        """Checks, the exact command, who runs it, the attach settings and the preset's launch.json entry."""
+        from .debug import vscode
+
+        p = await self._debug_plan(params)
+        return {k: v for k, v in p.items() if k not in ("session", "test")} | {"entry": vscode.entry(p["preset"])}
+
+    async def h_debug_start(self, params, _conn):
+        """Server preset: start the session as the run-as user and return it. Test preset: a background job
+        (debug.step, debug.finished) that ends with the test result."""
+        from .debug import launch
+
+        p = await self._debug_plan(params)
+        if not p["ok"]:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c["detail"] for c in p["checks"] if c["status"] == "fail"))
+        conn = await self.agent(p["user"])
+        if p["kind"] == "server":
+            try:
+                return await launch.start(p, conn, lambda e: None)
+            except launch.LaunchError as exc:
+                raise rpc.RpcError(rpc.CONFLICT, str(exc)) from exc
+
+        async def work(report) -> dict:
+            return await launch.start(p, conn, report)
+
+        run_id = self._start_job("debug", work, {"preset": p["preset"]["id"], "attach": p["attach"]})
+        return {"kind": "test", "run_id": run_id, "attach": p["attach"]}
+
+    async def _vscode_plan(self, params):
+        from .debug import presets, vscode
+
+        p = params or {}
+        root = p.get("root")
+        snap = await self._snap()
+        if not any(i["root"] == root for i in snap["installations"]):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"{root} is not a discovered Odoo installation")
+        configs = {i["path"] for i in snap["instances"] if i.get("installation") == root}
+        rows = [r for r in self._debug_call(presets.load) if r.get("instance") in configs]
+        return await asyncio.to_thread(vscode.plan, root, rows, bool(p.get("replace")))
+
+    async def h_debug_vscode_plan(self, params, _conn):
+        """What writing the installation's attach entries into <root>/.vscode/launch.json would change."""
+        return await self._vscode_plan(params)
+
+    async def h_debug_vscode_write(self, params, _conn):
+        from .debug import vscode
+
+        planned = await self._vscode_plan(params)
+        return self._debug_call(vscode.write, planned)
+
+    async def h_debug_open(self, params, _conn):
+        """Open a file at a line in the IDE (Q3: traceback frames)."""
+        from .git import opener
+
+        p = params or {}
+        try:
+            return {"argv": opener.open_file(p.get("file"), p.get("line"))}
+        except opener.OpenError as exc:
+            raise rpc.RpcError(rpc.UNAVAILABLE, str(exc)) from exc
 
     # -- K1-K3: task runner ---------------------------------------------------------
 

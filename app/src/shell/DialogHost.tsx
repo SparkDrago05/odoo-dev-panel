@@ -12,6 +12,7 @@ import { ApplyProfileDialog, ExportProfileDialog } from "../features/Profiles";
 import { RepoAddDialog, RepoDiffDialog, RepoOpDialog } from "../features/RepoDialogs";
 import { RunDialog } from "../features/Run";
 import { TaskRunDialog, WorkflowEditorDialog } from "../features/Tasks";
+import { DebugStartDialog, PresetDialog, VscodeDialog } from "../features/Debug";
 import { useApp } from "../state/app";
 
 /** Dialogs any view or the command palette can open, plus the sudo password and confirmation prompts. */
@@ -45,6 +46,9 @@ export function DialogHost() {
       {d?.kind === "module-scaffold" && <ScaffoldDialog installation={d.installation} onClose={(changed) => done(changed, "modules")} />}
       {d?.kind === "profile-export" && <ExportProfileDialog root={d.root} onClose={close} />}
       {d?.kind === "profile-apply" && <ApplyProfileDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
+      {d?.kind === "debug-preset" && <PresetDialog instance={d.instance} id={d.id} onClose={(saved) => done(saved, "debug")} />}
+      {d?.kind === "debug-start" && <DebugStartDialog id={d.id} onClose={(started) => done(started, "debug", "modules")} />}
+      {d?.kind === "debug-vscode" && <VscodeDialog root={d.root} onClose={close} />}
       {d?.kind === "task-run" && <TaskRunDialog name={d.name} given={d.params} retryOf={d.retryOf} onClose={(ran) => { done(ran, "tasks"); if (ran) app.scan(); }} />}
       {d?.kind === "task-edit" && <WorkflowEditorDialog name={d.name} copyOf={d.copyOf} onClose={(saved) => done(saved, "tasks")} />}
       {d?.kind === "docker-delete" && <DeleteStackDialog container={d.container} onClose={(changed) => done(changed, "docker", "db")} />}

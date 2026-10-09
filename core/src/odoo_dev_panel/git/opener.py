@@ -59,3 +59,30 @@ def open_path(path: str, target: str) -> list[str]:
     subprocess.Popen(argv, cwd=path, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
     return argv
+
+
+def file_command(file: str, line: int | None, which=shutil.which) -> list[str]:
+    """Q3: the IDE command that opens ``file`` at ``line``: code -g file:line, pycharm --line N file, others file:line."""
+    ide = command("/", "ide", which)[:-1]  # the IDE argv without the folder
+    name = os.path.basename(ide[0])
+    if line is None:
+        return [*ide, file]
+    if name.startswith("pycharm"):
+        return [*ide, "--line", str(line), file]
+    if name in ("code", "codium", "code-oss"):
+        return [*ide, "-g", f"{file}:{line}"]
+    return [*ide, f"{file}:{line}"]
+
+
+def open_file(file: str, line: int | None = None) -> list[str]:
+    """Open a source file (from a traceback) in the IDE as the developer. Only existing regular files."""
+    if not isinstance(file, str) or not file.startswith("/"):
+        raise OpenError("file must be an absolute path")
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+        raise OpenError("line is a positive number")
+    if not os.path.isfile(file):
+        raise OpenError(f"{file} is not a file on this machine")
+    argv = file_command(file, line)
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return argv

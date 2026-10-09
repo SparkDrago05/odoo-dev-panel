@@ -43,3 +43,6 @@ export function filterLines(lines: LogLine[], minimum: Level | ""): LogLine[] {
   const min = LEVELS.indexOf(minimum);
   return lines.filter((l) => l.kind === "step" || l.level === null || LEVELS.indexOf(l.level) >= min);
 }
+
+/** A Python traceback frame: `  File "/path/x.py", line 12, in func`. Groups: indent, file, ", line ", line, rest. */
+export const FRAME = /^(\s*File ")(\/[^"]+)(", line )(\d+)(.*)$/;

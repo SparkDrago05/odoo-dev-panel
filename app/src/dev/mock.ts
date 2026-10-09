@@ -387,6 +387,11 @@ export function createMock(deliver: Deliver) {
       steps: runnable.map((i: Json, n: number) => ({ id: `${p.op}-${n + 1}`, phase: n + 1, actor: "dev", title: i.title, commands: i.commands })),
       counts: { run: runnable.length, skip: items.length - runnable.length }, register: null };
   };
+  // ---- Q1-Q4 debugging
+  let debugPresets: Json[] = [
+    { id: "nutech-hr", name: "NIMS HR", instance: "/etc/odoo/odoo19/nutech.conf", kind: "server", database: "nutech_upgrade_test", http_port: null, dev: ["xml"], update: [], install: [], modules: [], tags: null, demo: true, port: 5678, wait: false },
+    { id: "nutech-payroll-tests", name: "Payroll tests", instance: "/etc/odoo/odoo19/nutech.conf", kind: "test", database: null, http_port: null, dev: [], update: [], install: [], modules: ["nims_payroll"], tags: "/nims_payroll:TestSlip", demo: true, port: 5679, wait: true },
+  ];
   // ---- K1-K3 task runner
   const SAFE = `name = "Safe upgrade"\ndescription = "Snapshot the database and filestore, upgrade the modules, then run their tests in a throwaway database"\n\n[params.config]\nkind = "config"\ndescription = "Odoo config of the instance"\n\n[params.database]\nkind = "database"\ndescription = "Database to upgrade"\n\n[params.modules]\nkind = "modules"\ndescription = "Modules to upgrade"\n\n[[steps]]\nop = "db.snapshot"\ntitle = "Snapshot {database}"\nconfig = "{config}"\ndatabase = "{database}"\n\n[[steps]]\nop = "modules.upgrade"\ntitle = "Upgrade {modules} in {database}"\nconfig = "{config}"\ndatabase = "{database}"\nmodules = "{modules}"\nsnapshot = false\n\n[[steps]]\nop = "modules.test"\ntitle = "Test {modules}"\nconfig = "{config}"\nmodules = "{modules}"\n`;
   const wfs: Record<string, Json> = {
@@ -440,6 +445,58 @@ export function createMock(deliver: Deliver) {
   };
   let taskCurrent: { run: string; cancel: boolean } | null = null;
   const handlers: Record<string, (p: Json) => Json | Promise<Json>> = {
+    "debug.presets": (p) => ({ presets: debugPresets.filter((x) => !p?.instance || x.instance === p.instance), file: "/home/dev/.config/odoo-dev-panel/debug-presets.json", error: null }),
+    "debug.next_port": () => ({ port: 5678 + debugPresets.length + (debugPresets.some((x) => x.port === 5679) ? 1 : 0) }),
+    "debug.save": (p) => {
+      const pr = { kind: "server", database: null, http_port: null, dev: [], update: [], install: [], modules: [], tags: null, demo: true, wait: false, ...p.preset };
+      if (!p.overwrite && debugPresets.some((x) => x.id === pr.id)) throw new Error(`preset ${pr.id} exists`);
+      const i = debugPresets.findIndex((x) => x.id === pr.id);
+      if (i >= 0) debugPresets[i] = pr; else debugPresets.push(pr);
+      return pr;
+    },
+    "debug.delete": (p) => { const n = debugPresets.length; debugPresets = debugPresets.filter((x) => x.id !== p.id); return { deleted: debugPresets.length < n }; },
+    "debug.plan": (p) => {
+      const pr = debugPresets.find((x) => x.id === p.id);
+      if (!pr) throw new Error(`no debug preset ${p.id}`);
+      const inst = instances.find((i) => i.path === pr.instance);
+      const root = inst?.installation ?? "/opt/odoo19";
+      const user = root.split("/").pop();
+      const has = root !== "/opt/odoo17";
+      const argv = pr.kind === "test"
+        ? `${root}/venv/bin/python -m debugpy --listen 127.0.0.1:${pr.port}${pr.wait ? " --wait-for-client" : ""} ${root}/odoo/odoo-bin -c ${pr.instance} -d odp_test_${pr.modules[0]}_20261009_120000 -i ${pr.modules.join(",")} --stop-after-init --test-enable --test-tags ${pr.tags ?? "/" + pr.modules.join(",/")} --workers=0 --max-cron-threads=0`
+        : `${root}/venv/bin/python -m debugpy --listen 127.0.0.1:${pr.port}${pr.wait ? " --wait-for-client" : ""} ${root}/odoo/odoo-bin -c ${pr.instance}${pr.database ? ` -d ${pr.database}` : ""} --http-port 8075${pr.update.length ? ` -u ${pr.update.join(",")}` : ""}${pr.dev.length ? ` --dev=${pr.dev.join(",")}` : ""} --workers=0 --max-cron-threads=0`;
+      const checks = [
+        { id: "debugpy", status: has ? "ok" : "fail", detail: has ? `debugpy 1.8.16 in ${root}/venv` : `debugpy is not in ${root}/venv: install it from the Python tab (odp python tool debugpy --root ${root})` },
+        { id: "port", status: "ok", detail: `debugpy listens on 127.0.0.1:${pr.port}` },
+        { id: "local-users", status: "warn", detail: `while it listens, any local user can connect to 127.0.0.1:${pr.port} and run code as ${user}` },
+        ...(pr.dev.includes("reload") ? [{ id: "reload", status: "warn", detail: "--dev=reload restarts Odoo on file changes; the restarted process is not under the debugger" }] : []),
+        { id: "workers", status: "ok", detail: "runs with --workers=0 --max-cron-threads=0 (the config is not changed)" },
+      ];
+      return { kind: pr.kind, preset: pr, ok: has, checks, commands: [argv], user, attach: { host: "127.0.0.1", port: pr.port, wait: pr.wait },
+        entry: { name: `Odoo: ${pr.name}`, type: "debugpy", request: "attach", connect: { host: "127.0.0.1", port: pr.port }, justMyCode: false } };
+    },
+    "debug.start": (p) => {
+      const pr = debugPresets.find((x) => x.id === p.id)!;
+      const user = (instances.find((i) => i.path === pr.instance)?.installation ?? "/opt/odoo19").split("/").pop()!;
+      if (pr.kind === "test") return { kind: "test", attach: { port: pr.port }, ...job("debug", ["test", "cleanup"], { kind: "test", test: { status: "failed", tests: 14, failures: 1, errors: 0, database: `odp_test_${pr.modules[0]}_20261009_120000`, kept: true, id: "t9", failed: [{ kind: "fail", test: "odoo.addons.x.tests.test_a: TestA.test_total" }] } }) };
+      const id = `d${++runCounter}`;
+      sessions.unshift({ id, user, name: `${pr.name} serve (debug ${pr.name})`, argv: ["python", "-m", "debugpy"], pid: 61000 + runCounter, state: "running", started_at: new Date().toISOString(), ended_at: null, exit_code: null, adopted: false, log_size: 0,
+        meta: { kind: "serve", db: pr.database, port: 8075, instance: pr.instance, preset: pr.id, debug: { host: "127.0.0.1", port: pr.port, wait: pr.wait } } });
+      return { kind: "server", session: sessions[0], attach: { port: pr.port } };
+    },
+    "debug.vscode_plan": (p) => {
+      const mine = debugPresets.filter((x) => instances.find((i) => i.path === x.instance)?.installation === p.root);
+      const jsonc = p.root === "/opt/odoo17";
+      const entries = mine.map((x) => ({ name: `Odoo: ${x.name}`, type: "debugpy", request: "attach", connect: { host: "127.0.0.1", port: x.port }, justMyCode: false }));
+      const conflict = !p.replace && mine.some((x) => x.id === "nutech-hr");
+      const diff = entries.map((e) => `+        {\n+            "name": "${e.name}",\n+            "type": "debugpy",\n+            "request": "attach",\n+            "connect": { "host": "127.0.0.1", "port": ${(e.connect as Json).port} },\n+            "justMyCode": false\n+        },`).join("\n");
+      return { path: `${p.root}/.vscode/launch.json`, exists: true, added: conflict ? entries.slice(1).map((e) => e.name) : entries.map((e) => e.name), replaced: p.replace ? ["Odoo: NIMS HR"] : [], unchanged: [], conflicts: conflict ? ["Odoo: NIMS HR"] : [], kept: 2, jsonc,
+        checks: jsonc ? [{ id: "jsonc", status: "fail", detail: `${p.root}/.vscode/launch.json has comments or trailing commas; it is not rewritten: paste the entries below into its configurations` }]
+          : conflict ? [{ id: "replace", status: "fail", detail: "launch.json already has a different Odoo: NIMS HR: confirm to replace" }] : [{ id: "merge", status: "ok", detail: `${entries.length} added, 0 replaced, 0 unchanged, 2 other entries kept` }],
+        diff: `--- launch.json\n+++ launch.json (new)\n@@ -3,6 +3,20 @@\n     "configurations": [\n${diff}`, snippet: JSON.stringify(entries, null, 4), ok: !jsonc && !conflict, before: "", after: "" };
+    },
+    "debug.vscode_write": (p) => ({ path: `${p.root}/.vscode/launch.json`, backup: `${p.root}/.vscode/launch.json.bak-20261009-120000`, changed: true }),
+    "debug.open": (p) => ({ argv: ["/usr/bin/code", "-g", `${p.file}:${p.line}`] }),
     "tasks.list": () => Object.entries(wfs).map(([name, w]) => ({ name, source: w.source, path: w.source === "saved" ? `/home/dev/.config/odoo-dev-panel/workflows/${name}.toml` : null, title: w.title, description: w.description, steps: w.steps.length, params: Object.keys(w.params), error: null }))
       .sort((a, b) => (a.source === b.source ? a.name.localeCompare(b.name) : a.source === "saved" ? -1 : 1)),
     "tasks.read": (p) => {

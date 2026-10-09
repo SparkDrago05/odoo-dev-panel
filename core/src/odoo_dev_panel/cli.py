@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import pwd
+import re
 import shlex
 import sys
 
@@ -307,8 +308,9 @@ async def cmd_start(args) -> int:
     params = {
         "db": args.db, "http_port": args.port, "update": args.update, "install": args.install,
         "stop_after_init": args.stop_after_init, "dev": args.dev, "extra": args.extra, "shell": args.shell,
+        "debug_port": args.debug_port, "debug_wait": args.debug_wait,
     }
-    planned = run.plan(snap, args.instance, params, set(listening_ports()))
+    planned = run.plan(snap, args.instance, params, set(listening_ports()) | ({args.debug_port} if args.debug_port else set()))
     user = planned.pop("user")
     if args.snapshot and not (args.update and args.db):
         print("odp: --snapshot needs --update and --db", file=sys.stderr)
@@ -328,6 +330,8 @@ async def cmd_start(args) -> int:
     else:
         port = session["meta"].get("port")
         print(f"started session {session['id']} (pid {session['pid']}) as {user}" + (f", http://localhost:{port}" if port else ""))
+        if args.debug_port:
+            print(f"debugpy listens on 127.0.0.1:{args.debug_port}; any local user can connect to it while it runs")
     return 0
 
 
@@ -1634,6 +1638,133 @@ def _task_report(event: dict) -> None:
         print(f"   {event['step']}: {event['status']} {event.get('text') or ''}".rstrip(), flush=True)
 
 
+def _preset_from_args(args, existing: dict | None = None) -> dict:
+    raw = dict(existing or {})
+    raw["id"] = args.id
+    for key, value in (("name", args.name), ("instance", args.config and os.path.abspath(args.config)),
+                       ("kind", args.kind), ("database", args.db), ("http_port", args.http_port), ("port", args.port),
+                       ("tags", args.tags)):
+        if value is not None:
+            raw[key] = value
+    for key in ("dev", "update", "install", "modules"):
+        if getattr(args, key):
+            raw[key] = getattr(args, key)
+    if args.wait is not None:
+        raw["wait"] = args.wait
+    if args.no_demo:
+        raw["demo"] = False
+    return raw
+
+
+def cmd_debug(args) -> int:
+    """Q1-Q4: debug presets, debugpy runs, VS Code attach entries, open file:line."""
+    from .debug import launch, presets, vscode
+    from .discover import scan
+    from .git import opener
+
+    sub = args.debug_command
+    try:
+        if sub == "list":
+            rows = presets.load()
+            if args.json:
+                _print(rows, True)
+                return 0
+            for r in rows:
+                what = f"test {','.join(r['modules'])}" if r["kind"] == "test" else f"server {r['database'] or ''}".rstrip()
+                print(f"{r['id']:20} :{r['port']:<6} {what:32} {r['instance']}" + ("  (waits for the IDE)" if r["wait"] else ""))
+            if not rows:
+                print(f"no presets in {presets.presets_file()}")
+            return 0
+        if sub in ("add", "edit"):
+            existing = presets.get(args.id) if sub == "edit" else None
+            raw = _preset_from_args(args, existing)
+            if raw.get("port") is None:
+                raw["port"] = presets.next_port(set(listening_ports()))
+            saved = presets.save(raw, overwrite=sub == "edit")
+            print(f"saved {saved['id']} (debug port {saved['port']}) in {presets.presets_file()}")
+            return 0
+        if sub == "delete":
+            ok = presets.delete(args.id)
+            print("deleted (previous file kept as .bak)" if ok else f"no preset {args.id}")
+            return 0 if ok else 1
+        if sub == "open":
+            file, _, line = args.target.rpartition(":") if re.search(r":\d+$", args.target) else (args.target, "", "")
+            print(" ".join(opener.open_file(os.path.abspath(file), int(line) if line else None)))
+            return 0
+        snap = scan.scan(with_databases=False)
+        if sub == "vscode":
+            root = os.path.normpath(args.root)
+            configs = {i["path"] for i in snap["instances"] if i.get("installation") == root}
+            planned = vscode.plan(root, [r for r in presets.load() if r["instance"] in configs], args.replace)
+            if args.json and not args.write:
+                _print(planned, True)
+                return 0 if planned["ok"] else 1
+            for c in planned["checks"]:
+                print(f"  [{c['status']:4}] {c['detail']}")
+            print(planned["diff"] or ("(no change)" if planned["ok"] else ""))
+            if not planned["ok"]:
+                print("Entries to paste:\n" + planned["snippet"])
+                return 1
+            if not args.write:
+                return 0
+            out = vscode.write(planned)
+            print(f"wrote {out['path']}" + (f" (previous file: {out['backup']})" if out["backup"] else "") if out["changed"] else "nothing to change")
+            return 0
+        preset = presets.get(args.id)
+        planned = asyncio.run(launch.plan(preset, snap, set(listening_ports())))
+    except LookupError as exc:
+        print(f"odp: {str(exc).strip(chr(39))}", file=sys.stderr)
+        return 2
+    except (presets.PresetError, launch.LaunchError, vscode.VscodeError, opener.OpenError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    shown = {k: v for k, v in planned.items() if k not in ("session", "test")} | {"entry": vscode.entry(preset)}
+    if args.json and (sub == "plan" or not args.yes):
+        _print(shown, True)
+        return 0 if planned["ok"] else 1
+    if not args.json:
+        print(f"{preset['name']}: {preset['kind']} as {planned['user']}, debugpy on 127.0.0.1:{preset['port']}")
+        for c in planned["checks"]:
+            print(f"  [{c['status']:4}] {c['detail']}")
+        for line in planned["commands"]:
+            print(f"  $ {line}")
+        print("VS Code attach entry:\n" + json.dumps(vscode.entry(preset), indent=2))
+    if sub == "plan":
+        return 0 if planned["ok"] else 1
+    if not planned["ok"]:
+        print("odp: fix the failed checks first", file=sys.stderr)
+        return 1
+    if not args.yes and input("Start now? [y/N] ").strip().lower() != "y":
+        return 1
+
+    async def go():
+        conn = await client.connect(planned["user"])
+        try:
+            return await launch.start(planned, conn, (lambda e: None) if args.json else _job_report)
+        finally:
+            await conn.close()
+
+    try:
+        result = asyncio.run(go())
+    except (launch.LaunchError, rpc.RpcError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    if args.json:
+        _print(result, True)
+    elif result["kind"] == "server":
+        s = result["session"]
+        print(f"started session {s['id']} as {planned['user']}; attach the IDE to 127.0.0.1:{preset['port']}"
+              + (" (Odoo waits for it)" if preset["wait"] else "") + f"; stop with: odp stop -u {planned['user']} {s['id']}")
+    else:
+        t = result["test"]
+        print(f"{t['status']}: {t['tests']} tests, {t['failures']} failed, {t['errors']} errors"
+              + (f"; database {t['database']} kept (odp modules drop-test {t['id']})" if t["kept"] else ""))
+    ok = result["kind"] == "server" or result["test"]["status"] == "passed"
+    return 0 if ok else 1
+
+
 def cmd_tasks(args) -> int:
     """K1-K3: workflows of typed operations."""
     from .tasks import runner, steps, workflow
@@ -1808,6 +1939,8 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--dry-run", action="store_true", help="print the command, start nothing")
     start.add_argument("--snapshot", action="store_true", help="with --update: snapshot the database first (odp db snapshots)")
     start.add_argument("--arg", dest="extra", action="append", default=[], help="further odoo-bin argument (repeatable)")
+    start.add_argument("--debug-port", type=int, help="run under debugpy on 127.0.0.1:PORT (adds --workers=0)")
+    start.add_argument("--debug-wait", action="store_true", help="with --debug-port: wait for the IDE to attach")
 
     ps = sub.add_parser("ps", help="list sessions")
     ps.add_argument("--user", "-u")
@@ -1951,6 +2084,44 @@ def build_parser() -> argparse.ArgumentParser:
     p = prof.add_parser("org", help="show or set the org overlay file")
     p.add_argument("path", nargs="?")
     p.add_argument("--default", action="store_true", help="back to ~/.config/odoo-dev-panel/org.toml")
+
+    dbg = sub.add_parser("debug", help="debug presets: list, add, edit, delete, plan, start, vscode, open").add_subparsers(
+        dest="debug_command", required=True)
+    t = dbg.add_parser("list", help="debug presets")
+    t.add_argument("--json", action="store_true")
+    for verb, text in (("add", "add a preset (the debug port defaults to the first free one from 5678)"),
+                       ("edit", "change a preset: only the given options change")):
+        t = dbg.add_parser(verb, help=text)
+        t.add_argument("id")
+        t.add_argument("-c", "--config", required=verb == "add", help="Odoo config of the instance")
+        t.add_argument("--name")
+        t.add_argument("--kind", choices=("server", "test"))
+        t.add_argument("-d", "--db")
+        t.add_argument("--http-port", type=int)
+        t.add_argument("--port", type=int, help="debugpy port (stable: the IDE entry uses it)")
+        t.add_argument("--dev", action="append", default=[])
+        t.add_argument("-u", "--update", action="append", default=[])
+        t.add_argument("-i", "--install", action="append", default=[])
+        t.add_argument("-m", "--modules", action="append", default=[], help="test preset: modules to test")
+        t.add_argument("--tags", help="test preset: --test-tags")
+        t.add_argument("--no-demo", action="store_true", help="test preset: without demo data")
+        t.add_argument("--wait", dest="wait", action="store_true", default=None, help="wait for the IDE before Odoo starts")
+        t.add_argument("--no-wait", dest="wait", action="store_false")
+    t = dbg.add_parser("delete", help="remove a preset (the previous file is kept as .bak)")
+    t.add_argument("id")
+    for verb, text in (("plan", "checks, command and attach entry of a preset"),
+                       ("start", "start a preset as the run-as user (server: returns at once; test: until the tests end)")):
+        t = dbg.add_parser(verb, help=text)
+        t.add_argument("id")
+        t.add_argument("--yes", action="store_true")
+        t.add_argument("--json", action="store_true")
+    t = dbg.add_parser("vscode", help="attach entries of an installation's presets for ROOT/.vscode/launch.json (diff; --write)")
+    t.add_argument("root")
+    t.add_argument("--write", action="store_true")
+    t.add_argument("--replace", action="store_true", help="replace our entries that differ")
+    t.add_argument("--json", action="store_true")
+    t = dbg.add_parser("open", help="open FILE[:LINE] in the IDE")
+    t.add_argument("target")
 
     tk = sub.add_parser("tasks", help="workflows of typed operations: list, show, ops, preview, run, retry, history").add_subparsers(
         dest="tasks_command", required=True)
@@ -2200,6 +2371,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_profile(args)
     if args.command == "tasks":
         return cmd_tasks(args)
+    if args.command == "debug":
+        return cmd_debug(args)
     if args.command == "repo":
         if args.repo_command in ("add", "fetch", "pull") and getattr(args, "paths", True) == [] and not args.bulk:
             print("odp: give repository paths or --bulk", file=sys.stderr)

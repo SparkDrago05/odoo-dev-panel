@@ -21,7 +21,7 @@ export type Session = {
   adopted: boolean;
   log_size: number;
   pty?: boolean;
-  meta?: { kind?: string; db?: string | null; port?: number | null; instance?: string };
+  meta?: { kind?: string; db?: string | null; port?: number | null; instance?: string; preset?: string; debug?: { host: string; port: number; wait: boolean } };
 };
 
 export type GroupState = { group: string; exists: boolean; member: boolean; active: boolean };

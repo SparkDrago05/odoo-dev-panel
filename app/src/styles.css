@@ -722,3 +722,8 @@ pre.diff .hunk { color: var(--info); }
 .task-step-icon .dim { color: var(--text-3); }
 .tasks-layout { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 12px; align-items: start; }
 @media (max-width: 900px) { .tasks-layout { grid-template-columns: 1fr; } }
+
+/* Q3: traceback frames open in the IDE */
+.frame-link { all: unset; cursor: pointer; color: var(--accent-text, var(--accent)); text-decoration: underline dotted; text-underline-offset: 2px; }
+.frame-link:hover { text-decoration-style: solid; }
+.frame-link:focus-visible { outline: 1px solid var(--accent); border-radius: 2px; }

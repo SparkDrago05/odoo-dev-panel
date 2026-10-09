@@ -12,6 +12,11 @@ export type ProblemGroup = {
 };
 type Analysis = { counts: Record<Level, number>; groups: ProblemGroup[]; first_error_line: number | null; start_offset: number };
 
+/** Q3: open a traceback frame in the IDE; errors go to the app's toasts. */
+export function openFrame(file: string, line: number) {
+  rpc.request("debug.open", { file, line }).catch((e) => window.dispatchEvent(new CustomEvent("odp-error", { detail: String((e as Error).message) })));
+}
+
 /** Warnings and errors of a log, grouped (the core does the grouping). */
 export function ProblemList({ groups }: { groups: ProblemGroup[] }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -28,7 +33,8 @@ export function ProblemList({ groups }: { groups: ProblemGroup[] }) {
               <div className="stack tight" style={{ gap: 3 }}>
                 <span className="t">{g.title}</span>
                 <span className="d mono">
-                  {g.logger}{g.frame && ` · ${g.frame.file}:${g.frame.line} in ${g.frame.function}`}{g.dbs?.length ? ` · ${g.dbs.join(", ")}` : ""}
+                  {g.logger}{g.frame && <> · <button type="button" className="frame-link" title="Open in the IDE"
+                    onClick={(e) => { e.stopPropagation(); openFrame(g.frame!.file, g.frame!.line); }}>{g.frame.file}:{g.frame.line}</button> in {g.frame.function}</>}{g.dbs?.length ? ` · ${g.dbs.join(", ")}` : ""}
                 </span>
               </div>
               <div className="row nowrap tight">

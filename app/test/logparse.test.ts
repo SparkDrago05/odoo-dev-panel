@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterLog, parseLog } from "../src/ui/logparse";
+import { filterLog, parseLog, FRAME } from "../src/ui/logparse";
 
 const LOG = [
   "Starting...",
@@ -37,5 +37,15 @@ describe("filterLog", () => {
     expect(out.some((l) => l.includes("INFO"))).toBe(false);
     expect(out.some((l) => l.includes("DEBUG"))).toBe(false);
     expect(out.some((l) => l.includes("WARNING"))).toBe(true);
+  });
+});
+
+describe("FRAME", () => {
+  it("splits a traceback frame so the file can be opened at its line", () => {
+    const m = FRAME.exec('  File "/opt/odoo19/custom/x/models/a.py", line 42, in _compute');
+    expect(m?.[2]).toBe("/opt/odoo19/custom/x/models/a.py");
+    expect(m?.[4]).toBe("42");
+    expect(m?.slice(1).join("")).toBe('  File "/opt/odoo19/custom/x/models/a.py", line 42, in _compute');
+    expect(FRAME.exec('  File "<string>", line 1, in <module>')).toBeNull();
   });
 });

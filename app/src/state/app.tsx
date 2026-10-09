@@ -8,7 +8,7 @@ export type InstallTab = "overview" | "instances" | "repos" | "databases" | "mod
 export type Route =
   | { view: "home" }
   | { view: "installation"; root: string; tab?: InstallTab; repo?: string; module?: string }
-  | { view: "instance"; path: string }
+  | { view: "instance"; path: string; tab?: "overview" | "debug" }
   | { view: "databases"; root?: string; db?: string }
   | { view: "sessions"; key?: string }
   | { view: "doctor"; finding?: string }
@@ -46,7 +46,10 @@ export type DialogSpec =
   | { kind: "module-scaffold"; installation: string }
   | { kind: "python-action"; root: string; params: Record<string, unknown> }
   | { kind: "task-run"; name: string; params?: Record<string, unknown>; retryOf?: string }
-  | { kind: "task-edit"; name?: string; copyOf?: string };
+  | { kind: "task-edit"; name?: string; copyOf?: string }
+  | { kind: "debug-preset"; instance: string; id?: string }
+  | { kind: "debug-start"; id: string }
+  | { kind: "debug-vscode"; root: string };
 
 // ---------- Preferences ----------
 
@@ -137,6 +140,12 @@ function useAppState() {
   }, [dismiss]);
   /** Error reporter handed to every panel. */
   const onError = useCallback((message: string) => notify("bad", message), [notify]);
+  useEffect(() => {
+    // errors from components outside the app context (log console frame links)
+    const on = (e: Event) => notify("bad", String((e as CustomEvent).detail));
+    window.addEventListener("odp-error", on);
+    return () => window.removeEventListener("odp-error", on);
+  }, [notify]);
 
   // ---- navigation
   const [route, setRoute] = useState<Route>(() => readStore<{ r: Route }>("odp.route", { r: { view: "home" } }).r);

@@ -20,7 +20,7 @@ function CurrentView({ route }: { route: Route }) {
   switch (route.view) {
     case "home": return <HomeView />;
     case "installation": return <InstallationView root={route.root} tab={route.tab} repo={route.repo} module={route.module} />;
-    case "instance": return <InstanceView path={route.path} />;
+    case "instance": return <InstanceView path={route.path} tab={route.tab} />;
     case "databases": return <DatabasesView root={route.root} db={route.db} />;
     case "sessions": return <SessionsView selectedKey={route.key} />;
     case "doctor": return <DoctorView finding={route.finding} />;

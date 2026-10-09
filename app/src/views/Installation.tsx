@@ -1,6 +1,7 @@
 import {
-  Boxes, Copy, FileCode2, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
+  Boxes, Bug, Copy, FileCode2, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
 } from "lucide-react";
+import { DebugPanel } from "../features/Debug";
 import { useModuleCenter } from "../features/ModuleCenter";
 import { PythonPanel } from "../features/PythonEnv";
 import { RuntimeControls } from "../features/Run";
@@ -189,7 +190,7 @@ export function InstallationView({ root, tab = "overview", repo, module }: { roo
   );
 }
 
-export function InstanceView({ path }: { path: string }) {
+export function InstanceView({ path, tab = "overview" }: { path: string; tab?: "overview" | "debug" }) {
   const app = useApp();
   const { snap, sessions } = app;
   const inst = snap?.instances.find((i) => i.path === path);
@@ -222,6 +223,9 @@ export function InstanceView({ path }: { path: string }) {
             <InstanceMenu inst={inst} />
           </>} />
 
+        <Tabs label="Instance" value={tab} onChange={(t) => app.nav({ view: "instance", path, tab: t })}
+          tabs={[{ id: "overview", label: "Overview" }, { id: "debug", label: "Debug", icon: <Bug /> }]} />
+        {tab === "debug" ? <DebugPanel path={path} root={inst.installation} /> : <>
         {inst.problems.map((p) => <Callout key={p} tone="warn">{p}</Callout>)}
         {st.external && <Callout tone="info">This instance runs outside Odoo Dev Panel (pid {st.pid}{st.unit ? `, systemd unit ${st.unit}` : ""}). Its output is not available here{st.unit ? "; see Services for its journal" : ""}.</Callout>}
 
@@ -245,6 +249,7 @@ export function InstanceView({ path }: { path: string }) {
             </div>
           )}
         </Panel>
+        </>}
       </View>
       <Inspector title="Instance">
         <InspectorSection title="Config">
