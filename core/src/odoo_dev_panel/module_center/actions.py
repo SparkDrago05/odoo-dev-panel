@@ -119,7 +119,8 @@ async def run_session(conn, planned: dict, report: Report, step: str) -> tuple[i
     """Start a session in the agent, stream its log as step output, return (exit code, session id, log text)."""
     import asyncio
 
-    session = await conn.request("session.start", {k: planned[k] for k in ("argv", "cwd", "name", "meta")} | {"env": {}})
+    session = await conn.request("session.start", {k: planned[k] for k in ("argv", "cwd", "name", "meta")}
+                                 | {"env": planned.get("env") or {}})
     offset, text = 0, []
     size = 0
 

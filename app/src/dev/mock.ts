@@ -219,6 +219,26 @@ const testRuns: Json[] = [
   { id: "t1", at: iso(180), installation: "/opt/odoo19", config: "/etc/odoo/odoo19/nutech.conf", modules: ["adm_core"], tags: null, demo: true, database: "odp_test_adm_core_20261009_080000", kept: false, exit_code: 0, status: "passed", tests: 31, failures: 0, errors: 0, failed: [], note: null },
 ];
 
+// ---------- Python environment ----------
+const pyEnv = (root: string) => {
+  const r = (file: string, name: string, spec: string, installed: string | null, status: string, detail = "", installed_as: string | null = null) =>
+    ({ file: `${root}/${file}`, name, raw: `${name}${spec}`, spec, marker: null, installed, installed_as: installed_as ?? (installed ? name : null), status, detail });
+  const requirements = [
+    r("odoo/requirements.txt", "lxml", "==5.2.1", "5.2.1", "ok"), r("odoo/requirements.txt", "babel", "==2.10.3", "2.10.3", "ok"),
+    r("odoo/requirements.txt", "psycopg2", "==2.9.9", "2.9.9", "ok", "", "psycopg2-binary"), r("odoo/requirements.txt", "werkzeug", "==3.0.1", "3.0.1", "ok"),
+    r("odoo/requirements.txt", "gevent", "==22.10.2", null, "not-applicable", "marker excludes Python 3.12"),
+    r("openupgrade/requirements.txt", "openupgradelib", "", null, "missing", "not installed in the venv"),
+    r("partners/nims/requirements.txt", "pandas", "==2.2.3", "3.0.6", "mismatch", "3.0.6 installed, ==2.2.3 asked"),
+    r("custom/hr/payroll/requirements.txt", "lxml", "==4.9.0", "5.2.1", "mismatch", "5.2.1 installed, ==4.9.0 asked"),
+  ];
+  return { root, version: "19.0", run_as: "odoo19",
+    interpreter: { venv: `${root}/venv`, python: `${root}/venv/bin/python`, target: "/opt/odoo-dev-panel/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12", version: "3.12", built_for: "3.12", pinned: "3.12", uv_managed: true, system_python: false, problem: root === "/opt/odoo18" ? "bin/python is now Python 3.13, but the venv was built with Python 3.11" : null, matches_pin: true },
+    files: [`${root}/odoo/requirements.txt`, `${root}/openupgrade/requirements.txt`, `${root}/partners/nims/requirements.txt`, `${root}/custom/hr/payroll/requirements.txt`],
+    requirements, counts: { ok: 4, missing: 1, mismatch: 2, "not-applicable": 1, unknown: 0 },
+    conflicts: [{ name: "lxml", reason: "pinned to different versions: 4.9.0, 5.2.1", asked: [{ file: `${root}/odoo/requirements.txt`, spec: "==5.2.1" }, { file: `${root}/custom/hr/payroll/requirements.txt`, spec: "==4.9.0" }] }],
+    packages: { babel: "2.10.3", lxml: "5.2.1", pandas: "3.0.6", "psycopg2-binary": "2.9.9", werkzeug: "3.0.1", "ipython": "8.30.0", "black": "24.10.0" }, extras: ["black", "ipython"] };
+};
+
 const plan = (checks: [string, string, string][], steps: [string, string, string[]][]) => ({
   checks: checks.map(([id, status, detail]) => ({ id, status, detail })),
   steps: steps.map(([id, title, commands], i) => ({ id, phase: i + 1, actor: i ? "agent" : "root", title, commands })),
@@ -372,6 +392,28 @@ export function createMock(deliver: Deliver) {
     "agents.list": () => agents,
     "sessions.list": () => [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at)),
     "discover.scan": () => snapshotOf(),
+    "python.env": (p) => pyEnv(p.root),
+    "python.tools": () => ({ tools: [
+      { tool: "debugpy", scope: "venv", installed: false, version: null, detail: "in the installation's venv: lets an IDE attach to Odoo" },
+      { tool: "rtlcss", scope: "system", installed: true, version: "rtlcss version: 4.3.0", detail: "right-to-left CSS" },
+      { tool: "wkhtmltopdf", scope: "system", installed: true, version: "wkhtmltopdf 0.12.6 (Ubuntu package)", patched: false, detail: "PDF reports; this build is not the patched-Qt one Odoo needs" }] }),
+    "python.disk": (p) => ({ root: p.root, parts: [{ label: "venv", path: `${p.root}/venv`, bytes: 612_000_000, complete: true }, { label: "odoo source", path: `${p.root}/odoo`, bytes: 1_420_000_000, complete: true }, { label: "custom", path: `${p.root}/custom`, bytes: 380_000_000, complete: true }], free: 48_200_000_000, total: 250_000_000_000 }),
+    "python.export": () => ({ text: "# Odoo 19.0, Python 3.12\n# 7 packages, exported by Odoo Dev Panel\nbabel==2.10.3\nlxml==5.2.1\n" }),
+    "python.plan": (p) => {
+      const pk = p.op === "install" ? [...(p.packages ?? []), ...(p.missing ? ["openupgradelib", "pandas==2.2.3", "lxml==4.9.0"] : [])] : p.op === "tool" ? [p.tool] : ["lxml", "babel", "psycopg2-binary", "werkzeug"];
+      const system = p.op === "tool" && p.tool !== "debugpy";
+      const checks = [{ id: "venv", status: "ok", detail: `${p.root}/venv/bin/python (Python 3.12)` }, { id: "agent", status: "ok", detail: "agent of odoo19 is running" },
+        ...(p.op === "install" ? [{ id: "running", status: "warn", detail: "Odoo runs from this venv (pid 2881): restart it afterwards to load the change" }] : [])];
+      const script = p.tool === "wkhtmltopdf" ? "#!/usr/bin/env bash\nset -euo pipefail\nDEB=/home/dev/.local/state/odoo-dev-panel/downloads/wkhtmltox_0.12.6.1-3.jammy_amd64.deb\necho \"4f723b26...  $DEB\" | sha256sum -c -\napt-get install -y -qq \"$DEB\"\nwkhtmltopdf --version\n" : p.tool === "rtlcss" ? "#!/usr/bin/env bash\nset -euo pipefail\napt-get install -y -qq nodejs npm\nnpm install -g rtlcss\n" : undefined;
+      return { kind: p.op === "tool" ? "tool" : p.op, tool: p.tool, ok: true, packages: pk, checks: system ? [] : checks, script,
+        steps: system ? [{ id: "root", phase: 1, actor: "root", title: "apt-get install (one sudo prompt)", commands: ["sudo -A bash <script below>"] }]
+          : [{ id: p.op, phase: 1, actor: "odoo19", title: p.op === "validate" ? "Import odoo and the top-level modules of 4 required package(s)" : `Install ${pk.length} package(s) into ${p.root}/venv`,
+              commands: [p.op === "validate" ? `${p.root}/venv/bin/python -c <import check script> ${p.root}/odoo ${pk.join(" ")}` : `CFLAGS=... /usr/lib/odoo-dev-panel/bin/uv pip install --python ${p.root}/venv/bin/python ${pk.join(" ")}`] }] };
+    },
+    "python.run": (p) => job("python", p.op === "validate" ? ["validate"] : p.op === "tool" && p.tool !== "debugpy" ? ["download", "root"] : ["pip"],
+      p.op === "validate" ? { kind: "validate", ok: false, failed: ["pandas"], validation: { python: "3.12.14", odoo: { ok: true, version: "19.0" }, modules: { lxml: { ok: true, error: null }, babel: { ok: true, error: null }, pandas: { ok: false, error: "pandas: ImportError: numpy.core.multiarray failed to import" } } } }
+        : { kind: p.op === "tool" ? "tool" : "install", ok: true, exit_code: 0 }),
+
     "modules.center": (p) => modCenter(p),
     "modules.plan": (p) => {
       const db = p.kind === "test" ? `odp_test_${p.modules[0]}_20261009_120000` : p.database;

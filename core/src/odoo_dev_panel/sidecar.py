@@ -121,6 +121,12 @@ class Sidecar:
             "config.save": self.h_config_save,
             "modules.graph": self.h_modules_graph,
             "modules.center": self.h_modules_center,
+            "python.env": self.h_python_env,
+            "python.disk": self.h_python_disk,
+            "python.export": self.h_python_export,
+            "python.tools": self.h_python_tools,
+            "python.plan": self.h_python_plan,
+            "python.run": self.h_python_run,
             "modules.plan": self.h_modules_plan,
             "modules.run": self.h_modules_run,
             "modules.tests": self.h_modules_tests,
@@ -802,6 +808,103 @@ class Sidecar:
             except dbquery.QueryError as exc:
                 full["db_error"] = str(exc)
         return full
+
+    # -- Y1-Y9: Python environment ------------------------------------------------
+
+    @staticmethod
+    def _py_error(exc: Exception) -> rpc.RpcError:
+        return rpc.RpcError(rpc.INVALID_PARAMS, str(exc))
+
+    async def _snap_procs(self) -> dict:
+        """Snapshot with processes (needed to warn about a running Odoo), without databases."""
+        from .discover import scan
+
+        return await asyncio.to_thread(scan.scan, None, False)
+
+    async def h_python_env(self, params, _conn):
+        """Interpreter (actual vs pinned), packages, requirement rows with status, conflicts, extras."""
+        from .pyenv import api
+
+        try:
+            return await asyncio.to_thread(api.show, params or {}, await self._snap_procs())
+        except api.ApiError as exc:
+            raise self._py_error(exc) from exc
+
+    async def h_python_disk(self, params, _conn):
+        from .pyenv import actions, env
+
+        try:
+            inst = env.installation(await self._snap_procs(), (params or {}).get("root"))
+        except env.EnvError as exc:
+            raise self._py_error(exc) from exc
+        return await asyncio.to_thread(actions.disk, inst)
+
+    async def h_python_export(self, params, _conn):
+        """Sanitized name==version list of the venv."""
+        from .pyenv import env
+
+        try:
+            inst = env.installation(await self._snap_procs(), (params or {}).get("root"))
+        except env.EnvError as exc:
+            raise self._py_error(exc) from exc
+        return {"text": await asyncio.to_thread(env.freeze, inst)}
+
+    async def h_python_tools(self, params, _conn):
+        from .pyenv import env, tools
+
+        root = (params or {}).get("root")
+        inst = None
+        if root:
+            try:
+                inst = env.installation(await self._snap_procs(), root)
+            except env.EnvError as exc:
+                raise self._py_error(exc) from exc
+        return {"tools": await asyncio.to_thread(tools.status, inst), "wkhtmltopdf": tools.WKHTML}
+
+    async def _python_plan(self, params):
+        from .pyenv import api
+
+        params = params or {}
+        snap = await self._snap_procs()
+        owner = None
+        if params.get("root"):
+            owner = next((i.get("owner") for i in snap["installations"] if i["root"] == params["root"]), None)
+        running = None
+        if owner and not (params.get("op") == "tool" and params.get("tool") != "debugpy"):
+            running = (await client.agent_status(owner))["state"] == "running"
+        try:
+            return await asyncio.to_thread(api.plan, params, snap, running)
+        except api.ApiError as exc:
+            raise self._py_error(exc) from exc
+
+    async def h_python_plan(self, params, _conn):
+        """Dry run: install packages, validate imports, or install a dev tool. Checks, steps, the root script."""
+        p = await self._python_plan(params)
+        return {k: v for k, v in p.items() if k != "session"} | ({"argv": p["session"]["argv"]} if "session" in p else {})
+
+    async def h_python_run(self, params, _conn):
+        """Run a python.plan in the background: python.step, python.finished."""
+        from .provision import execute
+        from .pyenv import api
+
+        p = await self._python_plan(params)
+        if not p["ok"]:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c["detail"] for c in p["checks"] if c["status"] == "fail"))
+        conn = await self.agent(p["session"]["user"]) if "session" in p else None
+
+        async def root_runner(script: str, rep) -> int:
+            self._unlocking, self._purpose = None, "tools"
+            try:
+                return await execute.sudo_runner(script, rep, {"ODP_ASKPASS_SOCK": self.askpass_path})
+            finally:
+                self._unlocking, self._purpose = None, "unlock"
+
+        async def work(report) -> dict:
+            return await api.execute(p, conn, report, root_runner)
+
+        run_id = self._start_job("python", work, {"kind": p["kind"], "root": (params or {}).get("root"),
+                                                  "tool": p.get("tool")})
+        return {"run_id": run_id, "kind": p["kind"]}
 
     # -- M1-M9: module center ---------------------------------------------------
 

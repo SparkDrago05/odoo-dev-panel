@@ -181,3 +181,22 @@ export type ModuleTestRun = {
   database: string; kept: boolean; exit_code: number | null; status: string; tests: number; failures: number; errors: number;
   failed: { kind: string; test: string }[]; note: string | null;
 };
+
+// ---------- Python environment (Y1-Y9) ----------
+
+export type PyRequirement = {
+  file: string; name: string; raw: string; spec: string; marker: string | null; installed: string | null; installed_as: string | null;
+  status: "ok" | "missing" | "mismatch" | "not-applicable" | "unknown"; detail: string;
+};
+export type PyEnv = {
+  root: string; version: string | null; run_as: string | null;
+  interpreter: {
+    venv: string | null; python: string | null; target: string | null; version: string | null; built_for: string | null; pinned: string | null;
+    uv_managed: boolean; system_python: boolean; problem: string | null; matches_pin: boolean | null;
+  };
+  files: string[]; requirements: PyRequirement[]; counts: Record<"ok" | "missing" | "mismatch" | "not-applicable" | "unknown", number>;
+  conflicts: { name: string; reason: string; asked: { file: string; spec: string }[] }[]; packages: Record<string, string>; extras: string[];
+};
+export type PyTool = { tool: string; scope: "venv" | "system"; installed: boolean; version: string | null; detail: string; patched?: boolean };
+export type PyDisk = { root: string; parts: { label: string; path: string; bytes: number; complete: boolean }[]; free: number; total: number };
+export type PyPlan = { kind: string; ok: boolean; checks: Check[]; steps: Step[]; packages?: string[]; script?: string; tool?: string; argv?: string[] };

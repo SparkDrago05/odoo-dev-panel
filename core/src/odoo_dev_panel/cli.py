@@ -1203,6 +1203,115 @@ def cmd_module_verb(argv: list[str]) -> int:
     return 0 if ok else 1
 
 
+def cmd_python(args) -> int:
+    """Y1-Y9: the Python environment of an installation."""
+    from .discover import scan
+    from .provision import execute
+    from .pyenv import actions, api, env, tools
+
+    snap = scan.scan(with_databases=False)
+    sub = args.python_command
+    try:
+        if sub == "show":
+            data = api.show({"root": args.root}, snap)
+            if args.json:
+                _print(data, True)
+                return 0
+            it = data["interpreter"]
+            print(f"{data['root']}  Odoo {data['version']}  runs as {data['run_as']}")
+            print(f"  python   {it['target'] or '-'}  {it['version'] or '?'} (built for {it['built_for'] or '?'}, pinned {it['pinned'] or '-'})"
+                  + ("  uv-managed" if it["uv_managed"] else "") + ("  SYSTEM PYTHON" if it["system_python"] else ""))
+            if it["problem"]:
+                print(f"  PROBLEM  {it['problem']}")
+            print(f"  packages {len(data['packages'])}, requirement files {len(data['files'])}: "
+                  + ", ".join(f"{v} {k}" for k, v in data["counts"].items() if v))
+            for r in data["requirements"]:
+                if r["status"] in ("missing", "mismatch", "unknown"):
+                    print(f"  {r['status']:8} {r['name']:28} {r['spec'] or '':20} {r['installed'] or '-':12} {r['file']}")
+            for c in data["conflicts"]:
+                print(f"  CONFLICT {c['name']}: {c['reason']} (" + "; ".join(f"{a['spec']} in {a['file']}" for a in c["asked"]) + ")")
+            return 1 if data["counts"]["missing"] or data["counts"]["mismatch"] or data["conflicts"] or it["problem"] else 0
+        if sub == "export":
+            print(env.freeze(env.installation(snap, args.root)), end="")
+            return 0
+        if sub == "disk":
+            data = actions.disk(env.installation(snap, args.root))
+            if args.json:
+                _print(data, True)
+                return 0
+            for row in data["parts"]:
+                print(f"  {row['label']:12} {row['bytes'] / 1024**2:10.0f} MiB{'' if row['complete'] else '+ (stopped early)'}  {row['path']}")
+            print(f"  free         {data['free'] / 1024**3:10.1f} GiB of {data['total'] / 1024**3:.0f} GiB")
+            return 0
+        if sub == "tools":
+            inst = env.installation(snap, args.root) if args.root else None
+            rows = tools.status(inst)
+            if args.json:
+                _print(rows, True)
+                return 0
+            for r in rows:
+                print(f"  {r['tool']:12} {'installed' if r['installed'] else 'missing':10} {r['version'] or '':40} {r['detail']}")
+            return 0
+        if sub == "install":
+            params = {"op": "install", "root": args.root, "packages": args.packages, "missing": args.missing}
+        elif sub == "validate":
+            params = {"op": "validate", "root": args.root}
+        else:
+            params = {"op": "tool", "tool": args.tool, "root": args.root}
+        p = api.plan(params, snap)
+    except api.ApiError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    if args.json and args.plan:
+        _print({k: v for k, v in p.items() if k != "session"}, True)
+        return 0 if p["ok"] else 1
+    if not args.json:
+        for c in p["checks"]:
+            print(f"  [{c['status']:4}] {c['detail']}")
+        for st in p["steps"]:
+            print(f"  {st['phase']}. [{st['actor']}] {st['title']}")
+            for line in st["commands"]:
+                print(f"     $ {line}")
+        if p.get("script") and args.plan:
+            print("".join(f"  | {line}\n" for line in p["script"].splitlines()))
+    if args.plan:
+        return 0 if p["ok"] else 1
+    if not p["ok"]:
+        print("odp: fix the failed checks first", file=sys.stderr)
+        return 1
+    if not args.yes and input("Run now? [y/N] ").strip().lower() != "y":
+        return 1
+
+    async def go():
+        async def root_runner(script: str, rep) -> int:
+            return await execute.sudo_runner(script, rep)
+
+        conn = await client.connect(p["session"]["user"]) if "session" in p else None
+        try:
+            return await api.execute(p, conn, (lambda e: None) if args.json else _job_report, root_runner)
+        finally:
+            if conn:
+                await conn.close()
+
+    try:
+        result = asyncio.run(go())
+    except (*api.ApiError, rpc.RpcError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print(result, True)
+    elif result.get("validation") is not None or result["kind"] == "validate":
+        v = result.get("validation") or {}
+        odoo = v.get("odoo") or {}
+        print(f"odoo: {'imports' if odoo.get('ok') else 'FAILS: ' + str(odoo.get('error'))}")
+        for name in result.get("failed", []):
+            print(f"  FAILS {name}: {v['modules'][name]['error']}")
+        print(f"{len(v.get('modules', {})) - len(result.get('failed', []))} of {len(v.get('modules', {}))} packages import")
+    else:
+        print("done" if result["ok"] else f"failed (exit code {result.get('exit_code')})")
+    return 0 if result["ok"] else 1
+
+
 def cmd_docker(args) -> int:
     from .discover import docker
 
@@ -1622,6 +1731,31 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--yes", action="store_true")
         p.add_argument("--json", action="store_true")
 
+    pyp = sub.add_parser("python", help="Python environment of an installation: show, install, validate, export, disk, tools").add_subparsers(
+        dest="python_command", required=True)
+    for name, text in (("show", "interpreter, packages, requirement status and conflicts"), ("export", "name==version list (sanitized)"),
+                       ("disk", "disk use of venv, source, enterprise and custom")):
+        q = pyp.add_parser(name, help=text)
+        q.add_argument("root")
+        q.add_argument("--json", action="store_true")
+    q = pyp.add_parser("tools", help="debugpy, rtlcss, wkhtmltopdf status")
+    q.add_argument("root", nargs="?")
+    q.add_argument("--json", action="store_true")
+    q = pyp.add_parser("install", help="install packages into the venv as its run-as user (uv pip)")
+    q.add_argument("root")
+    q.add_argument("packages", nargs="*", help="name, name==1.2, name[extra]>=2")
+    q.add_argument("--missing", action="store_true", help="also every missing or mismatched requirement")
+    q = pyp.add_parser("validate", help="import odoo and every required package in the venv, as the run-as user")
+    q.add_argument("root")
+    q = pyp.add_parser("tool", help="install a dev tool: debugpy (venv), rtlcss or wkhtmltopdf (system, sudo)")
+    q.add_argument("tool", choices=("debugpy", "rtlcss", "wkhtmltopdf"))
+    q.add_argument("--root", help="installation (required for debugpy)")
+    for name in ("install", "validate", "tool"):
+        q = pyp.choices[name]
+        q.add_argument("--plan", action="store_true")
+        q.add_argument("--yes", action="store_true")
+        q.add_argument("--json", action="store_true")
+
     prof = sub.add_parser("profile", help="installation profiles and repository bundles: list, show, import, export, delete, org").add_subparsers(
         dest="profile_command", required=True)
     p = prof.add_parser("list", help="saved profiles and the org overlay")
@@ -1852,6 +1986,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_adopt(args)
     if args.command == "discover":
         return cmd_discover(args)
+    if args.command == "python":
+        return cmd_python(args)
     if args.command == "profile":
         return cmd_profile(args)
     if args.command == "repo":

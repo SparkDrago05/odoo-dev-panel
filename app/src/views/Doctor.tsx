@@ -136,6 +136,7 @@ export function DoctorView({ finding: selectedKey }: { finding?: string }) {
           {selected.repair === "venv" && selected.installation && (
             <InspectorSection title="Fix">
               <button className="btn primary" onClick={() => app.setDialog({ kind: "repair-venv", root: selected.installation! })}><Wrench />Repair venv…</button>
+              <button className="btn" onClick={() => app.nav({ view: "installation", root: selected.installation!, tab: "python" })}>Open the Python tab</button>
               <span className="xs dim">Shows the plan first. The old venv stays until the new one validates. The checks run again afterwards.</span>
             </InspectorSection>
           )}

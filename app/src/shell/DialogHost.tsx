@@ -4,6 +4,7 @@ import { DbActionDialog } from "../features/DbAction";
 import { DeleteStackDialog, DockerActionDialog, DockerLogsDialog, DockerShellDialog, NewStackDialog } from "../features/DockerDialogs";
 import { ModuleActionDialog, ScaffoldDialog } from "../features/ModuleCenter";
 import { ModulesDialog } from "../features/Modules";
+import { PythonActionDialog } from "../features/PythonEnv";
 import { ConfirmDialog, PasswordDialog } from "../features/Prompts";
 import { ProvisionDialog } from "../features/Provision";
 import { RepairVenvDialog } from "../features/RepairVenv";
@@ -39,6 +40,7 @@ export function DialogHost() {
       {d?.kind === "repo-add" && <RepoAddDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
       {d?.kind === "repo-diff" && <RepoDiffDialog path={d.path} onClose={close} />}
       {d?.kind === "module-action" && <ModuleActionDialog action={d.action} config={d.config} database={d.database} modules={d.modules} onClose={(changed) => done(changed, "modules")} />}
+      {d?.kind === "python-action" && <PythonActionDialog root={d.root} params={d.params} onClose={(changed) => { done(changed, "python"); if (changed) app.scan(); }} />}
       {d?.kind === "module-scaffold" && <ScaffoldDialog installation={d.installation} onClose={(changed) => done(changed, "modules")} />}
       {d?.kind === "profile-export" && <ExportProfileDialog root={d.root} onClose={close} />}
       {d?.kind === "profile-apply" && <ApplyProfileDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}

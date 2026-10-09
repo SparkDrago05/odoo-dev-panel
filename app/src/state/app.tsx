@@ -4,7 +4,7 @@ import type { Agent, AppInfo, Container, DbAction, DoctorReport, Session, Snapsh
 
 // ---------- Navigation ----------
 
-export type InstallTab = "overview" | "instances" | "repos" | "databases" | "modules" | "doctor";
+export type InstallTab = "overview" | "instances" | "repos" | "databases" | "modules" | "python" | "doctor";
 export type Route =
   | { view: "home" }
   | { view: "installation"; root: string; tab?: InstallTab; repo?: string; module?: string }
@@ -42,7 +42,8 @@ export type DialogSpec =
   | { kind: "profile-export"; root: string }
   | { kind: "profile-apply"; installation: string }
   | { kind: "module-action"; action: "upgrade" | "install" | "test"; config: string; database?: string; modules: string[] }
-  | { kind: "module-scaffold"; installation: string };
+  | { kind: "module-scaffold"; installation: string }
+  | { kind: "python-action"; root: string; params: Record<string, unknown> };
 
 // ---------- Preferences ----------
 

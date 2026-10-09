@@ -1,7 +1,8 @@
 import {
-  Boxes, Copy, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
+  Boxes, Copy, FileCode2, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
 } from "lucide-react";
 import { useModuleCenter } from "../features/ModuleCenter";
+import { PythonPanel } from "../features/PythonEnv";
 import { RuntimeControls } from "../features/Run";
 import { rpc } from "../rpc";
 import { Inspector, InspectorSection } from "../shell/Chrome";
@@ -22,6 +23,7 @@ const TABS: { id: InstallTab; label: string; icon: React.ReactNode }[] = [
   { id: "repos", label: "Repositories", icon: <FolderGit2 /> },
   { id: "databases", label: "Databases", icon: <Database /> },
   { id: "modules", label: "Modules", icon: <Boxes /> },
+  { id: "python", label: "Python", icon: <FileCode2 /> },
   { id: "doctor", label: "Diagnostics", icon: <HeartPulse /> },
 ];
 
@@ -168,6 +170,8 @@ export function InstallationView({ root, tab = "overview", repo, module }: { roo
       {tab === "databases" && <EmbeddedDatabases root={root} />}
 
       {tab === "modules" && modCenter.body}
+
+      {tab === "python" && <PythonPanel root={root} />}
 
       {tab === "doctor" && (
         <Panel title="Diagnostics" actions={<button className="btn sm" onClick={app.runDoctor} disabled={doctor.running}><RefreshCw />{doctor.running ? "Checking…" : doctor.report ? "Check again" : "Run checks"}</button>} flush>
