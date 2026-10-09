@@ -66,8 +66,15 @@ class Fixture(unittest.TestCase):
                      "venv": str(venv), "venv_python": str(venv / "bin" / "python")}
         self.snap = {"installations": [self.inst], "instances": [], "processes": [
             {"pid": 42, "installation": str(self.root), "user": "odoo19"}]}
+        # a stand-in uv, so plans do not depend on the .deb being installed (CI has none)
+        uv = self.tmp / "uv"
+        uv.write_text("#!/bin/sh\n")
+        uv.chmod(0o755)
+        self._uv = mock.patch.dict(os.environ, {"ODP_UV": str(uv)})
+        self._uv.start()
 
     def tearDown(self):
+        self._uv.stop()
         self._tmp.cleanup()
 
 
