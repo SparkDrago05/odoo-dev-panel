@@ -38,7 +38,9 @@ export type DialogSpec =
   | { kind: "docker-delete"; container: Container }
   | { kind: "repo-op"; op: "fetch" | "pull" | "switch" | "checkout"; repos?: string[]; bulk?: boolean; installation?: string }
   | { kind: "repo-add"; installation: string }
-  | { kind: "repo-diff"; path: string };
+  | { kind: "repo-diff"; path: string }
+  | { kind: "profile-export"; root: string }
+  | { kind: "profile-apply"; installation: string };
 
 // ---------- Preferences ----------
 

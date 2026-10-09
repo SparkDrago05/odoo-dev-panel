@@ -17,9 +17,10 @@ const OP_META: Record<RepoOp, { title: string; icon: ReactNode; verb: string }> 
   switch: { title: "Switch branch", icon: <GitBranch />, verb: "Switch" },
   checkout: { title: "Check out a tag or commit", icon: <GitCommitHorizontal />, verb: "Check out" },
   clone: { title: "Clone", icon: <FolderGit2 />, verb: "Clone" },
+  bundle: { title: "Apply a profile", icon: <FolderGit2 />, verb: "Apply" },
 };
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
-type Done = Finished & { op: RepoOp; results?: RepoResult[]; counts?: Record<string, number> };
+export type RepoDone = Finished & { op: RepoOp; results?: RepoResult[]; counts?: Record<string, number> };
 type RowState = "running" | "ok" | "fail";
 
 function useDebounced<T>(value: T, ms = 350) {
@@ -29,7 +30,7 @@ function useDebounced<T>(value: T, ms = 350) {
 }
 
 /** Per-repository progress of a running repository job, from git.step events. */
-function useRepoProgress() {
+export function useRepoProgress() {
   const runId = useRef<string | null>(null);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   useEffect(() => rpc.on("git.step", (e: StepEvent) => {
@@ -41,13 +42,14 @@ function useRepoProgress() {
 
 const STATUS_BADGE: Record<RepoResult["status"], ReactNode> = {
   ok: <Badge tone="ok"><CheckCircle2 />done</Badge>,
+  kept: <Badge tone="info"><CheckCircle2 />kept</Badge>,
   failed: <Badge tone="bad"><XCircle />failed</Badge>,
   skipped: <Badge><CircleSlash />skipped</Badge>,
   cancelled: <Badge tone="warn"><Square />cancelled</Badge>,
 };
 
 /** Plan, per-repository table, then results with partial failures spelled out. */
-function PlanTable({ plan, rows, results }: { plan: RepoPlan; rows: Record<string, RowState>; results?: RepoResult[] }) {
+export function PlanTable({ plan, rows, results }: { plan: RepoPlan; rows: Record<string, RowState>; results?: RepoResult[] }) {
   const byRepo = new Map(results?.map((r) => [r.repo, r]));
   return (
     <div className="panel" style={{ overflow: "hidden" }}>
@@ -62,7 +64,7 @@ function PlanTable({ plan, rows, results }: { plan: RepoPlan; rows: Record<strin
                   <span className="strong">{base(i.repo)}</span>
                   <span className="meta mono xs truncate" title={i.repo}>{i.repo}</span>
                 </div>
-                {i.skip ? <span className={`xs ${i.level === "fail" ? "bad-text" : "dim"}`}>Skipped: {i.skip}</span>
+                {i.skip ? <span className={`xs ${i.level === "fail" ? "bad-text" : "dim"}`}>{i.level === "ok" ? "Kept" : "Skipped"}: {i.skip}</span>
                   : i.commands.map((c) => <Cmd key={c}>{c}</Cmd>)}
                 {res?.problem && <Callout tone="bad" title={res.problem.title}>{res.problem.detail}{res.problem.commands.map((c) => <Cmd key={c}>{c}</Cmd>)}</Callout>}
                 {res?.status === "ok" && res.changed_files !== undefined && (
@@ -74,7 +76,7 @@ function PlanTable({ plan, rows, results }: { plan: RepoPlan; rows: Record<strin
               </div>
               <div style={{ flex: "none" }}>
                 {res ? STATUS_BADGE[res.status] : live === "running" ? <Badge tone="info"><span className="spinner" style={{ width: 10, height: 10 }} />running</Badge>
-                  : live ? STATUS_BADGE[live === "ok" ? "ok" : "failed"] : i.skip ? STATUS_BADGE.skipped : <Badge>queued</Badge>}
+                  : live ? STATUS_BADGE[live === "ok" ? "ok" : "failed"] : i.skip ? STATUS_BADGE[i.level === "ok" ? "kept" : "skipped"] : <Badge>queued</Badge>}
               </div>
             </div>
           );
@@ -94,7 +96,7 @@ export function RepoOpDialog({ op, repos: initial, bulk, installation, onClose }
   const [fetchBranch, setFetchBranch] = useState(false);
   const [plan, setPlan] = useState<RepoPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const job = useJob<Done>("git");
+  const job = useJob<RepoDone>("git");
   const progress = useRepoProgress();
   const runId = useRef<string | null>(null);
   const needsRef = op === "switch" || op === "checkout";
@@ -196,7 +198,7 @@ export function RepoAddDialog({ installation, onClose }: { installation: string;
   const [path, setPath] = useState("");
   const [plan, setPlan] = useState<RepoPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const job = useJob<Done>("git");
+  const job = useJob<RepoDone>("git");
   const progress = useRepoProgress();
 
   useEffect(() => {

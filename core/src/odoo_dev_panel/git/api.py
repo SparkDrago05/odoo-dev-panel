@@ -69,6 +69,8 @@ def plan(op: str, params: dict, snapshot: dict, registry_file: Path | None = Non
         if op == "checkout":
             row = _repo(snapshot, params.get("repo"), registry_file)
             return ops.plan_checkout(row["path"], row["gitdir"], params.get("ref"), params.get("confirm"))
+        if op == "bundle":
+            return _bundle(params, snapshot)
         inst = _installation(snapshot, params.get("installation"))
         fields = params.get("fields") or {}
         if not isinstance(fields, dict):
@@ -77,6 +79,82 @@ def plan(op: str, params: dict, snapshot: dict, registry_file: Path | None = Non
         return ops.plan_clone(inst["root"], params.get("url"), params.get("destination"), ref,
                               params.get("shallow", True) is not False, fields)
     except (ops.OpError, registry.RegistryError) as exc:
+        raise ApiError(str(exc)) from exc
+
+
+def _bundle(params: dict, snapshot: dict) -> ops.Plan:
+    """Repositories of a profile (and wizard overrides) applied to an existing installation of the same version."""
+    from ..provision import profiles
+    from ..provision.spec import SpecError, spec_from_dict
+
+    inst = _installation(snapshot, params.get("installation"))
+    try:
+        version = int((inst.get("version") or "").split(".")[0])
+    except ValueError as exc:
+        raise ApiError(f"{inst['root']} has no known Odoo version") from exc
+    try:
+        resolved = profiles.resolve(params.get("profile") or None, version, params.get("overrides") or None)
+    except profiles.ProfileError as exc:
+        raise ApiError(str(exc)) from exc
+    try:
+        built = spec_from_dict(resolved["spec"]).custom
+    except SpecError as exc:
+        raise ApiError(str(exc)) from exc
+    repos = [{"name": r.name, "url": r.url, "branch": r.branch, "destination": r.destination, "purpose": r.purpose,
+              "group": r.group, "addons": r.addons, "shallow": r.shallow} for r in built]
+    if not repos:
+        raise ApiError("the profile lists no repositories")
+    return ops.plan_bundle(inst["root"], repos)
+
+
+def addons_proposal(params: dict, snapshot: dict) -> list[dict]:
+    """T5: for each config of an installation, the addons_path entries the given repositories would add.
+    Nothing is written; ``addons_apply`` writes one config after the developer ticks it."""
+    from .. import configedit
+    from ..discover.configs import split_addons_path
+
+    inst = _installation(snapshot, params.get("installation"))
+    repos = params.get("repos")
+    if not isinstance(repos, list) or not all(isinstance(r, str) and r.startswith("/") for r in repos):
+        raise ApiError("repos is a list of absolute repository paths")
+    wanted = []
+    for repo in repos:
+        entry = ops.addons_entry(repo)
+        if entry and entry not in wanted:
+            wanted.append(entry)
+    out = []
+    for conf in sorted(c["path"] for c in snapshot.get("instances", []) if c.get("installation") == inst["root"]):
+        try:
+            text = open(conf, encoding="utf-8").read()
+        except OSError as exc:
+            out.append({"path": conf, "error": f"cannot read: {exc.strerror}", "add": [], "current": [], "sha": None})
+            continue
+        current = split_addons_path(configedit.parse(text).get("addons_path"))
+        known = {os.path.realpath(e) for e in current}
+        add = [e for e in wanted if os.path.realpath(e) not in known]
+        out.append({"path": conf, "current": current, "add": add, "after": current + add, "sha": configedit.sha(text),
+                    "writable": os.access(conf, os.W_OK), "error": None})
+    return out
+
+
+def addons_apply(params: dict, snapshot: dict) -> dict:
+    """Append entries to one config's addons_path through the config editor's save (backup, changed-file check)."""
+    from .. import configedit
+    from ..discover.configs import split_addons_path
+
+    path, add, base = params.get("path"), params.get("add"), params.get("sha")
+    if not any(c["path"] == path for c in snapshot.get("instances", [])):
+        raise NotFound(f"{path} is not a discovered Odoo config")
+    if not isinstance(add, list) or not add or not all(isinstance(a, str) and os.path.isdir(a) for a in add):
+        raise ApiError("add is a list of existing folders")
+    if not isinstance(base, str):
+        raise ApiError("sha of the config as it was shown is required")
+    text = open(path, encoding="utf-8").read()
+    current = split_addons_path(configedit.parse(text).get("addons_path"))
+    value = ",".join(current + [a for a in add if a not in current])
+    try:
+        return configedit.save(path, configedit.set_options(text, {"addons_path": value}), base, snapshot)
+    except configedit.ConfigError as exc:
         raise ApiError(str(exc)) from exc
 
 

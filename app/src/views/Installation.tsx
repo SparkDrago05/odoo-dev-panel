@@ -111,6 +111,8 @@ export function InstallationView({ root, tab = "overview", repo }: { root: strin
           <ActionMenu label="Installation actions" items={[
             inst.venv_ok === false && { label: "Repair venv…", icon: <Stethoscope />, onSelect: () => app.setDialog({ kind: "repair-venv", root }) },
             { label: "Fix config permissions…", icon: <ShieldCheck />, onSelect: () => app.setDialog({ kind: "fix-perms", root }) },
+            { label: "Export as a profile…", icon: <Copy />, onSelect: () => app.setDialog({ kind: "profile-export", root }) },
+            { label: "Apply a profile's repositories…", icon: <FolderGit2 />, onSelect: () => app.setDialog({ kind: "profile-apply", installation: root }) },
             { label: "Compare with another installation…", icon: <GitCompare />, onSelect: () => app.setDialog({ kind: "compare", mode: "installations", path: configs[0]?.path }) },
             "sep",
             { label: inst.adopted ? "Release (forget adoption)" : "Adopt into the registry", onSelect: () => app.act("updating the registry", async () => { await rpc.request("discover.adopt", { root, adopt: !inst.adopted }); await app.scan(); }) },

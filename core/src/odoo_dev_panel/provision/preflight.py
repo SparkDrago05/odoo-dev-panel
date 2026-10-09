@@ -78,6 +78,14 @@ class SystemFacts:
     def current_user(self) -> str:
         return pwd.getpwuid(os.getuid()).pw_name
 
+    def tree(self, path: str, marker: str) -> str:
+        from .execute import tree_state
+
+        return tree_state(path, marker)
+
+    def realpath(self, path: str) -> str:
+        return os.path.realpath(path)
+
 
 def run_preflight(spec: ProvisionSpec, facts: SystemFacts | None = None) -> list[Check]:
     f = facts or SystemFacts()
@@ -122,12 +130,86 @@ def run_preflight(spec: ProvisionSpec, facts: SystemFacts | None = None) -> list
     if spec.http_port is not None:
         add("http-port", not f.port_open("127.0.0.1", spec.http_port),
             f"port {spec.http_port} is free", f"port {spec.http_port} is in use", bad=WARN)
+    checks += destination_checks(spec, f)
     add("wkhtmltopdf", bool(f.which("wkhtmltopdf")), "wkhtmltopdf found",
         "wkhtmltopdf not found. Odoo needs the patched-Qt build from wkhtmltopdf.org, not the Ubuntu package. PDF reports will fail without it",
         bad=WARN)
     add("node-rtlcss", bool(f.which("node")) and bool(f.which("rtlcss")), "node and rtlcss found",
         "node or rtlcss missing. Right-to-left languages need rtlcss (npm install -g rtlcss)", bad=WARN)
     return checks
+
+
+def destination_checks(spec: ProvisionSpec, f: SystemFacts | None = None) -> list[Check]:
+    """T3: where each source tree lands. Existing clones are reused (no fetch); a non-empty folder that is not one
+    stops the run; a folder reached through a symbolic link must stay inside the root."""
+    f = f or SystemFacts()
+    out: list[Check] = []
+    real_root = f.realpath(spec.root)
+    targets = [("odoo", f"{spec.root}/odoo", "odoo-bin")]
+    if spec.has_enterprise:
+        targets.append(("enterprise", f"{spec.root}/enterprise", "web_enterprise"))
+    targets += [(f"repo:{r.name}", f"{spec.root}/{r.destination}", "__manifest__.py") for r in spec.custom]
+    for cid, path, marker in targets:
+        existing = path
+        while not f.path_exists(existing) and existing != "/":
+            existing = os.path.dirname(existing)
+        real = f.realpath(existing)
+        if f.path_exists(spec.root) and not (real == real_root or real.startswith(real_root + "/")):
+            out.append(Check(cid, FAIL, f"{path}: {existing} leads outside {spec.root}"))
+            continue
+        state = f.tree(path, marker)
+        if state == "present":
+            out.append(Check(cid, WARN, f"{path} exists: kept as is, not fetched or switched"))
+        elif state == "foreign":
+            out.append(Check(cid, FAIL, f"{path} exists, is not empty and is not a source tree; move it away or choose another destination"))
+        else:
+            out.append(Check(cid, OK, f"{path} will be created"))
+    return out
+
+
+REMOTE_TIMEOUT = 15
+
+
+def ls_remote(url: str, ref: str | None, timeout: float = REMOTE_TIMEOUT) -> tuple[str, str]:
+    """(status, detail) for one remote: ok, missing (no such branch or tag), auth, network or error.
+    Runs as the developer with the developer's SSH agent and credential helpers; never prompts."""
+    from ..git import explain, runner
+
+    cmd = ["git", "ls-remote", "--heads", "--tags", "--", url, ref] if ref else \
+        ["git", "ls-remote", "--symref", "--", url, "HEAD"]
+    res = runner.run(cmd, timeout=timeout)
+    if res.ok:
+        if ref and not res.stdout.strip():
+            return "missing", f"no branch or tag {ref} on the remote"
+        return "ok", f"{ref or 'default branch'} found"
+    if res.code == 124:
+        return "network", f"no answer within {timeout:g}s"
+    problem = explain.from_stderr(res.stderr) or {"code": "error", "title": res.stderr.strip()[:200] or f"exit {res.code}"}
+    kind = {"auth-failed": "auth", "host-key": "auth", "network": "network", "remote-missing": "auth"}.get(problem["code"], "error")
+    return kind, problem["title"]
+
+
+def remote_checks(spec: ProvisionSpec, check=ls_remote, facts: SystemFacts | None = None) -> list[Check]:
+    """T3: does each remote answer and have the wanted branch? In parallel; trees that exist already are skipped.
+    Unreachable (offline) is a warning; refused credentials or a missing branch fail, as the clone would."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ..git import urls
+
+    jobs = [("remote:odoo", spec.odoo_git, spec.odoo_branch, f"{spec.root}/odoo", "odoo-bin")]
+    if spec.enterprise_git:
+        jobs.append(("remote:enterprise", spec.enterprise_git, spec.enterprise_branch or f"{spec.version}.0",
+                     f"{spec.root}/enterprise", "web_enterprise"))
+    jobs += [(f"remote:{r.name}", r.url, r.branch, f"{spec.root}/{r.destination}", "__manifest__.py") for r in spec.custom]
+    f = facts or SystemFacts()
+    jobs = [j for j in jobs if f.tree(j[3], j[4]) == "missing"]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda j: check(j[1], j[2]), jobs))
+    out = []
+    for (cid, url, _ref, _path, _marker), (status, detail) in zip(jobs, results):
+        level = OK if status == "ok" else WARN if status == "network" else FAIL
+        out.append(Check(cid, level, f"{urls.redact(url)}: {detail}"))
+    return out
 
 
 def has_failures(checks: list[Check]) -> bool:

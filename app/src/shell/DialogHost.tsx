@@ -6,6 +6,7 @@ import { ModulesDialog } from "../features/Modules";
 import { ConfirmDialog, PasswordDialog } from "../features/Prompts";
 import { ProvisionDialog } from "../features/Provision";
 import { RepairVenvDialog } from "../features/RepairVenv";
+import { ApplyProfileDialog, ExportProfileDialog } from "../features/Profiles";
 import { RepoAddDialog, RepoDiffDialog, RepoOpDialog } from "../features/RepoDialogs";
 import { RunDialog } from "../features/Run";
 import { useApp } from "../state/app";
@@ -36,6 +37,8 @@ export function DialogHost() {
       {d?.kind === "repo-op" && <RepoOpDialog op={d.op} repos={d.repos} bulk={d.bulk} installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
       {d?.kind === "repo-add" && <RepoAddDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
       {d?.kind === "repo-diff" && <RepoDiffDialog path={d.path} onClose={close} />}
+      {d?.kind === "profile-export" && <ExportProfileDialog root={d.root} onClose={close} />}
+      {d?.kind === "profile-apply" && <ApplyProfileDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
       {d?.kind === "docker-delete" && <DeleteStackDialog container={d.container} onClose={(changed) => done(changed, "docker", "db")} />}
 
       {app.confirmReq && <ConfirmDialog request={app.confirmReq} onDone={(ok) => { app.confirmReq!.resolve(ok); app.setConfirmReq(null); }} />}

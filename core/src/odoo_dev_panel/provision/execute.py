@@ -245,6 +245,24 @@ def root_ledger_tee(ledger: dict, report: Report) -> Report:
     return tee
 
 
+def resolved_addons_path(spec: ProvisionSpec, report: Report, phase: str) -> list[str]:
+    """The addons_path from what was cloned (T1): a repository holding modules is added as is, a repository that is
+    itself one module adds its parent folder, one with no module at its top level is left out with a note."""
+    from ..git.ops import addons_entry
+
+    result = [p for p in (f"{spec.root}/odoo/addons", f"{spec.root}/enterprise" if spec.has_enterprise else None) if p]
+    for repo in spec.custom:
+        if not repo.addons:
+            continue
+        path = f"{spec.root}/{repo.destination}"
+        entry = addons_entry(path)
+        if entry is None:
+            _emit(report, phase, "output", f"{repo.destination}: no module folder at its top level, not added to addons_path")
+        elif entry not in result:
+            result.append(entry)
+    return result
+
+
 def register_repos(spec: ProvisionSpec, report: Report, phase: str) -> None:
     """W12: record the provisioned repositories in the Git workspace, so they appear there at once with their
     purpose and addons path role. Metadata only; a failure here never fails the provision."""
@@ -253,13 +271,16 @@ def register_repos(spec: ProvisionSpec, report: Report, phase: str) -> None:
     entries = [(f"{spec.root}/odoo", "community", spec.odoo_branch, "odoo")]
     if spec.enterprise_git:
         entries.append((f"{spec.root}/enterprise", "enterprise", spec.enterprise_branch or f"{spec.version}.0", "enterprise"))
-    entries += [(f"{spec.root}/custom/{r.name}", "custom", r.branch, f"custom/{r.name}") for r in spec.custom]
-    for path, purpose, branch, dest in entries:
+    entries += [(f"{spec.root}/{r.destination}", r.purpose, r.branch, r.destination, r.addons, r.group) for r in spec.custom]
+    for path, purpose, branch, dest, *extra in entries:
         if not os.path.isdir(f"{path}/.git"):
             continue
-        fields = {"purpose": purpose, "addons": True, "destination": dest, "expected_version": f"{spec.version}.0"}
+        addons, group = (extra + [True, None])[:2]
+        fields = {"purpose": purpose, "addons": addons, "destination": dest, "expected_version": f"{spec.version}.0"}
         if branch:
             fields["preferred_branch"] = branch
+        if group:
+            fields["group"] = group
         try:
             repos.register(path, spec.root, fields)
         except (repos.RegistryError, OSError) as exc:
@@ -327,8 +348,10 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
                 _emit(report, phase, "output", f"extracted {spec.enterprise_archive}")
             await fetch_tree(report, phase, ent_dir, "web_enterprise", extract, "Odoo enterprise")
         for repo in spec.custom:
-            dest = f"{spec.root}/custom/{repo.name}"
-            await fetch_tree(report, phase, dest, "__manifest__.py", clone(repo.url, repo.branch, dest), f"custom repository {repo.name}")
+            dest = f"{spec.root}/{repo.destination}"
+            argv = shlex.split(plan.custom_clone_command(repo, dest))
+            await fetch_tree(report, phase, dest, "__manifest__.py", lambda argv=argv: run_local(phase, argv, report),
+                             f"custom repository {repo.name}")
         register_repos(spec, report, phase)
         done(phase)
         _emit(report, phase, "ok")
@@ -372,7 +395,7 @@ async def provision(spec: ProvisionSpec, report: Report, root_runner: RootRunner
                 _emit(report, phase, "output", "kept as is")
             else:
                 _emit(report, phase, "start", f"Write {spec.conf_path}")
-                write_private(spec.conf_path, plan.render_conf(spec, sec))
+                write_private(spec.conf_path, plan.render_conf(spec, sec, addons=resolved_addons_path(spec, report, phase)))
             _emit(report, phase, "ok")
 
             phase = "verify"

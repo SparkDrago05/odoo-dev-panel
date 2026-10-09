@@ -108,14 +108,14 @@ export type Repo = {
   path: string; real: string; name: string; gitdir: string | null; purpose: string; registered: boolean;
   missing?: boolean; installations: RepoLink[]; state: RepoState | null;
 };
-export type RepoOp = "fetch" | "pull" | "switch" | "checkout" | "clone";
+export type RepoOp = "fetch" | "pull" | "switch" | "checkout" | "clone" | "bundle";
 export type RepoPlanItem = { repo: string; title: string; commands: string[]; skip: string | null; problems: RepoProblem[]; level: "ok" | "warn" | "fail" };
 export type RepoPlan = {
   op: RepoOp; ok: boolean; items: RepoPlanItem[]; checks: Check[]; steps: Step[];
   counts: { run: number; skip: number };
 };
 export type RepoResult = {
-  repo: string; commands: string[]; status: "ok" | "failed" | "skipped" | "cancelled"; output: string;
+  repo: string; commands: string[]; status: "ok" | "kept" | "failed" | "skipped" | "cancelled"; output: string;
   problem: RepoProblem | null; reason: string | null; changed_files?: number; changed_modules?: string[];
   addons_path_entry?: string | null;
 };
@@ -124,4 +124,32 @@ export type RepoDiff = {
   diff: string | null; diff_truncated?: boolean;
   incoming: { sha: string; author: string; date: string; subject: string }[];
   outgoing: { sha: string; author: string; date: string; subject: string }[];
+};
+
+// ---------- Profiles and provision plans (T1-T7) ----------
+
+export type ProfileInfo = {
+  name: string; path: string; error: string | null; title: string | null; description: string | null;
+  odoo_version: number | null; repos: number; has_install: boolean;
+};
+export type ProfileRepo = {
+  name?: string; url: string; branch?: string; destination?: string; addons?: boolean; purpose?: string; group?: string; shallow?: boolean;
+};
+export type ProfileResolved = {
+  version: number; pinned: number | null; install: Record<string, string | number>; config: Record<string, string>;
+  repos: ProfileRepo[]; origin: Record<string, string>; root: string; run_as: string; name: string | null; description: string | null;
+};
+export type ProvisionPlan = {
+  spec: {
+    version: number; run_as: string; root: string; python: string; odoo_git: string; odoo_branch: string; enterprise_git: string | null;
+    enterprise_branch: string | null; enterprise_archive: string | null; conf_path?: string; config_name: string;
+  } & Record<string, unknown>;
+  preflight: Check[]; ok: boolean; steps: Step[]; root_script: string; config: string; addons_path: string[];
+  tree: { path: string; kind: string; label: string; addons: boolean; group?: string | null; name?: string }[];
+  profile: { name: string | null; description: string | null; origin: Record<string, string>; pinned: number | null; version: number } | null;
+  previous: { path: string; status: string; last_phase: string; updated_at: string; completed: string[]; remaining: string[] } | null;
+  remote_checked: boolean;
+};
+export type AddonsProposal = {
+  path: string; current: string[]; add: string[]; after?: string[]; sha: string | null; writable?: boolean; error: string | null;
 };

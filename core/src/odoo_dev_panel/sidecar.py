@@ -152,7 +152,17 @@ class Sidecar:
             "repo.register": self.h_repo_register,
             "repo.forget": self.h_repo_forget,
             "repo.open": self.h_repo_open,
+            "repo.addons_plan": self.h_repo_addons_plan,
+            "repo.addons_apply": self.h_repo_addons_apply,
             "desktop.pickFile": self.h_pick_file,
+            "profile.list": self.h_profile_list,
+            "profile.read": self.h_profile_read,
+            "profile.resolve": self.h_profile_resolve,
+            "profile.save": self.h_profile_save,
+            "profile.delete": self.h_profile_delete,
+            "profile.import": self.h_profile_import,
+            "profile.export": self.h_profile_export,
+            "profile.org": self.h_profile_org,
             "group.join": self.h_group_join,
             "debug.print": self.h_debug_print,
         }
@@ -317,36 +327,24 @@ class Sidecar:
 
     async def h_provision_plan(self, params, _conn):
         """Dry run: preflight, steps, root script (verifier only) and config with placeholder passwords."""
-        from dataclasses import asdict
+        from .provision import service
 
-        from .provision import plan as plan_mod
-        from .provision import preflight
-        from .provision.spec import SpecError, spec_from_dict
-
+        params = dict(params or {})
+        remote = params.pop("remote", True) is not False
         try:
-            spec = spec_from_dict(params or {})
-        except SpecError as exc:
+            return await asyncio.to_thread(service.plan, params, remote)
+        except service.RequestError as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
-        sec = plan_mod.Secrets.generate()
-        checks = await asyncio.to_thread(preflight.run_preflight, spec)
-        placeholder = plan_mod.Secrets("<generated at run time>", "<generated at run time>")
-        return {
-            "spec": asdict(spec),
-            "preflight": [asdict(c) for c in checks],
-            "ok": not preflight.has_failures(checks),
-            "steps": [asdict(s) for s in plan_mod.build_steps(spec, sec)],
-            "root_script": plan_mod.render_root_script(spec, sec),
-            "config": plan_mod.render_conf(spec, placeholder),
-        }
 
     async def h_provision_run(self, params, _conn):
         """Start a provision in the background. Progress arrives as provision.step, the end as provision.finished."""
-        from .provision import execute
-        from .provision.spec import SpecError, spec_from_dict
+        from .provision import execute, service
 
+        params = dict(params or {})
+        params.pop("remote", None)
         try:
-            spec = spec_from_dict(params or {})
-        except SpecError as exc:
+            spec, _ = service.build(params)
+        except service.RequestError as exc:
             raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
 
         async def root_runner(script: str, rep) -> int:
@@ -506,6 +504,24 @@ class Sidecar:
         except api.ApiError as exc:
             raise self._git_error(exc) from exc
 
+    async def h_repo_addons_plan(self, params, _conn):
+        """For each config of an installation, the addons_path entries some repositories would add (read-only)."""
+        from .git import api
+
+        try:
+            return await asyncio.to_thread(api.addons_proposal, params or {}, await self._snap())
+        except (api.ApiError, LookupError) as exc:
+            raise self._git_error(exc) from exc
+
+    async def h_repo_addons_apply(self, params, _conn):
+        """Append entries to one config's addons_path (backup, refused if the file changed since it was shown)."""
+        from .git import api
+
+        try:
+            return await asyncio.to_thread(api.addons_apply, params or {}, await self._snap())
+        except (api.ApiError, LookupError) as exc:
+            raise self._git_error(exc) from exc
+
     async def h_repo_open(self, params, _conn):
         from .git import opener, workspace
 
@@ -520,6 +536,93 @@ class Sidecar:
             raise self._git_error(exc) from exc
         except opener.OpenError as exc:
             raise rpc.RpcError(rpc.UNAVAILABLE, str(exc)) from exc
+
+    # -- T2/T6: profiles ------------------------------------------------------
+
+    @staticmethod
+    def _profile_call(func, *args):
+        from .provision import profiles
+
+        try:
+            return func(*args)
+        except profiles.ProfileError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_profile_list(self, params, _conn):
+        """Saved profiles plus where the org overlay is and whether it exists and parses."""
+        from .provision import profiles
+
+        org = profiles.org_path()
+        org_error = None
+        if org.is_file():
+            try:
+                profiles.read(org)
+            except profiles.ProfileError as exc:
+                org_error = str(exc)
+        return {"profiles": await asyncio.to_thread(profiles.list_profiles), "folder": str(profiles.profiles_dir()),
+                "org": {"path": str(org), "exists": org.is_file(), "error": org_error}}
+
+    async def h_profile_read(self, params, _conn):
+        """One saved profile as data and as TOML text."""
+        from .provision import profiles
+
+        name = (params or {}).get("name")
+        path = self._profile_call(profiles.profile_path, name)
+        data = self._profile_call(profiles.read, path)
+        return {"name": name, "path": str(path), "data": data, "text": path.read_text()}
+
+    async def h_profile_resolve(self, params, _conn):
+        """Layers merged for a version: values, where each came from, and the spec they give."""
+        from .provision import profiles
+
+        p = params or {}
+        version = p.get("version")
+        if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "version must be an integer")
+        return self._profile_call(profiles.resolve, p.get("profile") or None, version, p.get("overrides") or None)
+
+    async def h_profile_save(self, params, _conn):
+        from .provision import profiles
+
+        p = params or {}
+        if not isinstance(p.get("data"), dict):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "data is a profile object")
+        return {"path": self._profile_call(profiles.save, p.get("name"), p["data"], bool(p.get("overwrite")))}
+
+    async def h_profile_delete(self, params, _conn):
+        """Moves the file aside as .trash-<name>-<time>.toml; nothing is deleted."""
+        from .provision import profiles
+
+        return {"moved_to": self._profile_call(profiles.delete, (params or {}).get("name"))}
+
+    async def h_profile_import(self, params, _conn):
+        from .provision import profiles
+
+        p = params or {}
+        if not isinstance(p.get("path"), str) or not p["path"].startswith("/"):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "path must be an absolute file")
+        return {"path": self._profile_call(profiles.import_file, p["path"], p.get("name") or None, bool(p.get("overwrite")))}
+
+    async def h_profile_export(self, params, _conn):
+        """Sanitized profile of a discovered installation: TOML text and data; with ``name`` it is also saved."""
+        from .provision import export, profiles
+
+        p = params or {}
+        snap = await self._snap()
+        try:
+            data, notes = await asyncio.to_thread(export.export_installation, p.get("root"), snap)
+        except export.ExportError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        out = {"data": data, "text": self._profile_call(profiles.dump, data), "notes": notes, "path": None}
+        if p.get("name"):
+            out["path"] = self._profile_call(profiles.save, p["name"], data, bool(p.get("overwrite")))
+        return out
+
+    async def h_profile_org(self, params, _conn):
+        """Set (``path``) or reset (``path: null``) where the org overlay file lives."""
+        from .provision import profiles
+
+        return {"path": self._profile_call(profiles.set_org_path, (params or {}).get("path"))}
 
     async def h_pick_file(self, params, _conn):
         """Native file chooser as the developer. ``{path: null}`` when cancelled."""

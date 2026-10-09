@@ -155,6 +155,46 @@ const repos: any[] = [
 repos[repos.length - 1].state = { ...repoState("/opt/odoo18/enterprise"), ok: false, worktree: true, error: ".git points to /home/odoo/.repositories/enterprise/.git/worktrees/18, which does not exist", problems: [prob("broken-worktree", "error", "Broken worktree", ".git points to a removed repository.", ["# keep the files as a plain folder:\nrm /opt/odoo18/enterprise/.git"])] };
 repos[repos.length - 1].gitdir = "/home/odoo/.repositories/enterprise/.git/worktrees/18";
 
+// ---------- Profiles ----------
+const org: Json = { name: "AARSOL", install: { odoo_branch: "{series}" }, repos: [{ name: "core", url: "git@git.example.com:aarsol/core.git", branch: "staging-{version}", destination: "custom/aarsol/core", group: "aarsol" }] };
+const profiles: Record<string, Json> = {
+  "education-dev": { name: "Education Development", description: "Admissions, examinations and HR", odoo_version: 19, config: { workers: "2" }, "repos+": [
+    { name: "admissions", url: "git@git.example.com:education/admissions.git", branch: "staging-{version}", destination: "custom/education/admissions", group: "education" },
+    { name: "examinations", url: "git@git.example.com:education/examinations.git", branch: "staging-{version}", destination: "custom/education/examinations", group: "education" },
+    { name: "hr", url: "git@git.example.com:education/hr.git", branch: "staging-{version}", destination: "custom/hr" }] },
+  "oca-web": { name: "OCA web tools", description: "Bundle: OCA web addons", repos: [{ name: "web", url: "https://github.com/OCA/web.git", branch: "{series}", destination: "custom/oca/web" }] },
+};
+const fill = (x: Json, v: number): Json => typeof x === "string" ? x.replace(/\{version\}/g, String(v)).replace(/\{series\}/g, `${v}.0`) : x;
+const resolveProfile = (name: string | null, version: number | null, overrides: Json) => {
+  const layers: [string, Json][] = [["built-in", { install: { odoo_git: "https://github.com/odoo/odoo.git", config_name: "default" } }], ["org", org]];
+  if (name) layers.push([`profile:${name}`, profiles[name]]);
+  if (overrides) layers.push(["wizard", overrides]);
+  const install: Json = {}; const config: Json = {}; let repos: Json[] = []; const origin: Record<string, string> = {}; let pinned: number | null = null; let title: string | null = null; let description: string | null = null;
+  let rOrigin: string[] = [];
+  for (const [label, d] of layers) {
+    if (d.odoo_version) { pinned = d.odoo_version; origin.odoo_version = label; }
+    if (d.name && label !== "wizard") title = d.name;
+    if (d.description) description = d.description;
+    for (const [k, x] of Object.entries(d.install ?? {})) { install[k] = x; origin[`install.${k}`] = label; }
+    for (const [k, x] of Object.entries(d.config ?? {})) { config[k] = x; origin[`config.${k}`] = label; }
+    if (d.repos) { repos = [...d.repos]; rOrigin = d.repos.map(() => label); }
+    if (d["repos+"]) { repos = [...repos, ...d["repos+"]]; rOrigin = [...rOrigin, ...d["repos+"].map(() => label)]; }
+  }
+  rOrigin.forEach((l, n) => { origin[`repos.${n}`] = l; });
+  const v = version ?? pinned ?? 17;
+  if (pinned && version && pinned !== version && name) throw new Error(`profile:${name} is for Odoo ${pinned}, not ${version}`);
+  for (const k of Object.keys(install)) install[k] = fill(install[k], v);
+  const filled = repos.map((x) => Object.fromEntries(Object.entries(x).map(([k, y]) => [k, fill(y, v)])));
+  return { version: v, pinned, install, config, repos: filled, origin, root: install.root || `/opt/odoo${v}`, run_as: install.run_as || `odoo${v}`, name: title, description, spec: {} };
+};
+const toml = (d: Json) => {
+  const q = (x: Json) => typeof x === "string" ? JSON.stringify(x) : String(x);
+  const out = Object.entries(d).filter(([, x]) => typeof x !== "object").map(([k, x]) => `${k} = ${q(x)}`);
+  for (const t of ["install", "config"]) if (d[t]) out.push("", `[${t}]`, ...Object.entries(d[t]).map(([k, x]) => `${k} = ${q(x)}`));
+  for (const t of ["repos", "repos+"]) for (const r of d[t] ?? []) out.push("", t === "repos" ? "[[repos]]" : '[["repos+"]]', ...Object.entries(r).map(([k, x]) => `${k} = ${q(x)}`));
+  return out.join("\n") + "\n";
+};
+
 const plan = (checks: [string, string, string][], steps: [string, string, string[]][]) => ({
   checks: checks.map(([id, status, detail]) => ({ id, status, detail })),
   steps: steps.map(([id, title, commands], i) => ({ id, phase: i + 1, actor: i ? "agent" : "root", title, commands })),
@@ -222,8 +262,41 @@ export function createMock(deliver: Deliver) {
   });
 
 
+
+  const provisionPlan = (p: Json) => {
+    const r = resolveProfile(p.profile, p.version, p.overrides);
+    const v = r.version;
+    const root = r.root, run_as = r.run_as;
+    const ent = r.install.enterprise_git ? "git" : r.install.enterprise_archive ? "archive" : null;
+    const tree = [{ path: "odoo", kind: "community", label: r.install.odoo_branch || `${v}.0`, addons: true }, { path: "venv", kind: "venv", label: "Python 3.12", addons: false },
+      ...(ent ? [{ path: "enterprise", kind: "enterprise", label: ent === "archive" ? "archive" : r.install.enterprise_branch || `${v}.0`, addons: true }] : []),
+      ...r.repos.map((x: Json) => ({ path: x.destination || `custom/${x.name}`, kind: x.purpose || "custom", label: x.branch || "default branch", addons: x.addons !== false, name: x.name, group: x.group ?? null }))];
+    const exists = installations.some((i) => i.root === root);
+    const preflight = [
+      { id: "root-path", status: exists ? "warn" : "ok", detail: exists ? `${root} already exists: it is reused, existing files are not overwritten` : `${root} does not exist` },
+      { id: "postgres", status: "ok", detail: "PostgreSQL answers on localhost:5432" }, { id: "disk", status: "ok", detail: "48.2 GiB free" },
+      ...tree.filter((t) => t.kind !== "venv").map((t) => ({ id: t.kind === "community" || t.kind === "enterprise" ? t.kind : `repo:${(t as Json).name}`, status: "ok", detail: `${root}/${t.path} will be created` })),
+      { id: "remote:odoo", status: "ok", detail: `https://github.com/odoo/odoo.git: ${v}.0 found` },
+      ...r.repos.map((x: Json) => ({ id: `remote:${x.name}`, status: /examinations/.test(x.url) ? "fail" : "ok", detail: /examinations/.test(x.url) ? `${x.url}: Authentication failed` : `${x.url}: ${x.branch || "default branch"} found` })),
+      { id: "wkhtmltopdf", status: "warn", detail: "wkhtmltopdf not found. Odoo needs the patched-Qt build from wkhtmltopdf.org" },
+    ];
+    const addons = [`${root}/odoo/addons`, ...(ent ? [`${root}/enterprise`] : []), ...tree.filter((t) => t.addons && t.kind !== "community" && t.kind !== "enterprise").map((t) => `${root}/${t.path}`)];
+    return {
+      spec: { version: v, run_as, root, python: "3.12", odoo_git: r.install.odoo_git, odoo_branch: r.install.odoo_branch || `${v}.0`, enterprise_git: r.install.enterprise_git || null, enterprise_branch: r.install.enterprise_branch || null, enterprise_archive: r.install.enterprise_archive || null, config_name: r.install.config_name || "default", conf_path: `/etc/odoo/${run_as}/${r.install.config_name || "default"}.conf` },
+      preflight, ok: !preflight.some((c) => c.status === "fail"),
+      steps: [{ id: "root-script", phase: 1, actor: "root", title: "Create user, directories, packages, PostgreSQL role and agent (one sudo prompt)", commands: ["sudo -A bash <generated root script>"] },
+        { id: "clone-odoo", phase: 2, actor: "dev", title: `Clone Odoo community ${v}.0`, commands: [`git clone --depth=1 --single-branch --no-tags --branch ${v}.0 https://github.com/odoo/odoo.git ${root}/odoo`] },
+        ...r.repos.map((x: Json) => ({ id: `custom-${x.name}`, phase: 2, actor: "dev", title: `Clone ${x.name} into ${x.destination || `custom/${x.name}`}`, commands: [`git clone --depth=1 --single-branch --no-tags ${x.branch ? `--branch ${x.branch} ` : ""}${x.url} ${root}/${x.destination || `custom/${x.name}`}`] })),
+        { id: "venv", phase: 3, actor: "agent", title: "Create the virtual environment", commands: [] }, { id: "config", phase: 4, actor: "dev", title: "Write the config", commands: [] }],
+      root_script: `#!/bin/bash\nset -euo pipefail\nid ${run_as} || useradd --system --home ${root} ${run_as}\ninstall -d -m 2775 ${root}`,
+      config: `[options]\nadmin_passwd = <generated at run time>\ndb_user = ${run_as}\naddons_path = ${addons.join(",\n\t")}\n${Object.entries(r.config).map(([k, x]) => `${k} = ${x}`).join("\n")}`,
+      addons_path: addons, tree, remote_checked: true,
+      profile: { name: r.name, description: r.description, origin: r.origin, pinned: r.pinned, version: v },
+      previous: root === "/opt/odoo18" ? { path: "/opt/odoo18/.odp-provision.json", status: "incomplete", last_phase: "failed in python", updated_at: "2026-10-08T14:02:11+00:00", completed: ["root-script", "clone"], remaining: ["pip", "verify"] } : null,
+    };
+  };
   const repoPlan = (p: Json) => {
-    const pick: string[] = p.op === "clone" ? [] : p.bulk ? repos.filter((r) => !p.installation || r.installations.some((i: Json) => i.root === p.installation)).map((r) => r.path) : p.repos ?? [p.repo];
+    const pick: string[] = p.op === "clone" || p.op === "bundle" ? [] : p.bulk ? repos.filter((r) => !p.installation || r.installations.some((i: Json) => i.root === p.installation)).map((r) => r.path) : p.repos ?? [p.repo];
     const items = pick.map((path: string) => {
       const r = repos.find((x) => x.path === path)!;
       const s = r.state;
@@ -238,6 +311,17 @@ export function createMock(deliver: Deliver) {
       const cmd = { fetch: `git -C ${path} fetch --prune origin`, pull: `git -C ${path} pull --ff-only --no-rebase`, switch: `git -C ${path} switch --track origin/${p.branch}`, checkout: `git -C ${path} switch --detach ${p.ref}` }[p.op as string];
       return { repo: path, title: `${p.op} ${r.name}`, commands: skip ? [] : [cmd], skip, problems: s.problems, level: skip ? (p.op === "switch" ? "fail" : "warn") : "ok" };
     });
+    if (p.op === "bundle") {
+      const r = resolveProfile(p.profile, 19, null);
+      const items = r.repos.map((x: Json) => {
+        const target = `${p.installation}/${x.destination || `custom/${x.name}`}`;
+        const there = repos.some((y) => y.path === target);
+        return { repo: target, title: `${there ? "Keep" : "Clone"} ${x.name} into ${x.destination}`, commands: there ? [] : [`git clone --depth=1 --single-branch --no-tags ${x.branch ? `--branch ${x.branch} ` : ""}-- ${x.url} ${target}`],
+          skip: there ? "already there: kept, not fetched or switched" : null, problems: [], level: "ok" };
+      });
+      const run = items.filter((i: Json) => !i.skip);
+      return { op: "bundle", ok: true, items, checks: [], steps: run.map((i: Json, n: number) => ({ id: `bundle-${n + 1}`, phase: n + 1, actor: "dev", title: i.title, commands: i.commands })), counts: { run: run.length, skip: items.length - run.length }, register: null };
+    }
     if (p.op === "clone") {
       const target = `${p.installation}/${p.destination}`;
       const bad = /:[^@/]*@/.test(p.url ?? "") ? "the URL contains a password; use an SSH key or a Git credential helper instead" : null;
@@ -280,15 +364,15 @@ export function createMock(deliver: Deliver) {
       let t = 300;
       const results: Json[] = [];
       for (const it of pl.items) {
-        if (it.skip) { results.push({ repo: it.repo, commands: [], status: "skipped", output: "", problem: null, reason: it.skip }); continue; }
+        if (it.skip) { results.push({ repo: it.repo, commands: [], status: it.level === "ok" ? "kept" : "skipped", output: "", problem: null, reason: it.skip, addons_path_entry: it.level === "ok" ? it.repo : undefined }); continue; }
         const broken = it.repo.endsWith("examinations") && p.op === "fetch";
         setTimeout(() => emit("git.step", { run_id, step: it.repo, status: "start", text: it.title }), t); t += 400;
         setTimeout(() => emit("git.step", { run_id, step: it.repo, status: "output", text: broken ? "git@git.example.com: Permission denied (publickey)." : "From git.example.com:aarsol/x\n   4f1c2aa..9ab31c0  main -> origin/main" }), t); t += 400;
         setTimeout(() => emit("git.step", { run_id, step: it.repo, status: broken ? "fail" : "ok", text: broken ? "Authentication failed" : "" }), t); t += 150;
         results.push(broken ? { repo: it.repo, commands: it.commands, status: "failed", output: "Permission denied (publickey).", reason: null, problem: prob("auth-failed", "error", "Authentication failed", "The remote refused your credentials. Check that your SSH agent has the right key, or that a Git credential helper is configured for this host.", ["ssh-add -l", "ssh -T git@<host>"]) }
-          : { repo: it.repo, commands: it.commands, status: "ok", output: "", problem: null, reason: null, ...(p.op === "pull" ? { changed_files: 4, changed_modules: ["adm_core", "adm_portal"] } : {}), ...(p.op === "clone" ? { addons_path_entry: it.repo } : {}) });
+          : { repo: it.repo, commands: it.commands, status: "ok", output: "", problem: null, reason: null, ...(p.op === "pull" ? { changed_files: 4, changed_modules: ["adm_core", "adm_portal"] } : {}), ...(p.op === "clone" || p.op === "bundle" ? { addons_path_entry: it.repo } : {}) });
       }
-      const counts = { ok: 0, failed: 0, skipped: 0, cancelled: 0 } as Record<string, number>;
+      const counts = { ok: 0, kept: 0, failed: 0, skipped: 0, cancelled: 0 } as Record<string, number>;
       for (const r of results) counts[r.status]++;
       setTimeout(() => emit("git.finished", { run_id, ok: true, error: null, op: p.op, results, counts }), t + 200);
       return { run_id, op: p.op, repos: pl.items.map((i: Json) => i.repo) };
@@ -405,8 +489,23 @@ export function createMock(deliver: Deliver) {
     "compare.run": (p) => ({ a: { path: p.path, name: "acme", notes: [] }, b: { path: p.other, name: "demo", notes: [] }, facts: [{ key: "Odoo version", a: "17.0", b: "17.0", same: true }, { key: "git commit", a: "4f1c2aa", b: "4f1c2aa", same: true }, { key: "Python", a: "3.10", b: "3.10", same: true }], packages: { only_a: {}, only_b: {}, changed: {} }, options: { only_a: { workers: "4" }, only_b: {}, changed: { http_port: ["8069", "8070"], db_name: ["acme_prod", "False"] } }, addons: { only_a: ["/opt/odoo17/custom"], only_b: [] }, expected: ["http_port", "db_name"] }),
     "compare.installations": (p) => ({ a: { path: p.a, name: p.a, notes: [] }, b: { path: p.b, name: p.b, notes: [] }, facts: [{ key: "Odoo version", a: "17.0", b: "19.0", same: false }, { key: "Python", a: "3.10", b: "3.12", same: false }], packages: { only_a: { "pypdf2": "1.26.0" }, only_b: { "pypdf": "4.2.0" }, changed: { lxml: ["4.9.2", "5.2.1"] } }, options: { only_a: {}, only_b: {}, changed: {} }, addons: { only_a: [], only_b: [] }, expected: [] }),
     "compare.databases": () => ({ a: { root: "/opt/odoo19", database: "nutech_prod" }, b: { root: "/opt/odoo19", database: "nutech_upgrade_test" }, modules: { only_a: { x_legacy_report: "installed 19.0.1.0" }, only_b: {}, changed: { nutech_sale: ["installed 19.0.2.0", "installed 19.0.2.1"] } }, counts: { a: 215, b: 214 } }),
-    "provision.plan": (p) => ({ spec: { ...p, run_as: p.run_as || `odoo${p.version}`, root: `/opt/odoo${p.version}`, conf_path: `/etc/odoo/odoo${p.version}/${p.config_name}.conf` }, preflight: [{ id: "root-path", status: installations.some((i) => i.version === `${p.version}.0`) ? "warn" : "ok", detail: `/opt/odoo${p.version}` }, { id: "python", status: "ok", detail: "python3.12 available" }, { id: "postgresql", status: "ok", detail: "PostgreSQL 16 running" }], ok: true, steps: [{ id: "user", phase: 1, actor: "root", title: `Create user odoo${p.version}`, commands: [] }, { id: "clone", phase: 2, actor: `odoo${p.version}`, title: "Clone Odoo community", commands: [] }, { id: "venv", phase: 2, actor: `odoo${p.version}`, title: "Build the venv", commands: [] }], root_script: `useradd --system odoo${p.version}\nmkdir -p /opt/odoo${p.version}`, config: `[options]\nhttp_port = ${p.http_port ?? 8069}\n` }),
-    "provision.run": async (p) => { await askPassword(`odoo${p.version}`, "provision"); return job("provision", ["user", "clone", "venv"], { root: `/opt/odoo${p.version}`, run_as: `odoo${p.version}`, conf_path: `/etc/odoo/odoo${p.version}/${p.config_name}.conf` }); },
+    "provision.plan": (p) => provisionPlan(p),
+    "provision.run": async (p) => { const pl = provisionPlan(p); await askPassword(pl.spec.run_as, "provision"); return job("provision", ["root-script", "clone", "python", "config", "verify"], { root: pl.spec.root, run_as: pl.spec.run_as, conf_path: pl.spec.conf_path }); },
+    "profile.list": () => ({ profiles: Object.entries(profiles).map(([name, d]) => ({ name, path: `/home/dev/.config/odoo-dev-panel/profiles/${name}.toml`, error: null, title: d.name, description: d.description ?? null, odoo_version: d.odoo_version ?? null, repos: (d.repos ?? []).length + (d["repos+"] ?? []).length, has_install: !!d.install })), folder: "/home/dev/.config/odoo-dev-panel/profiles", org: { path: "/home/dev/.config/odoo-dev-panel/org.toml", exists: true, error: null } }),
+    "profile.resolve": (p) => resolveProfile(p.profile, p.version, p.overrides),
+    "profile.read": (p) => ({ name: p.name, path: "", data: profiles[p.name], text: toml(profiles[p.name]) }),
+    "profile.save": (p) => { profiles[p.name] = p.data; return { path: `/home/dev/.config/odoo-dev-panel/profiles/${p.name}.toml` }; },
+    "profile.delete": (p) => { delete profiles[p.name]; return { moved_to: `/home/dev/.config/odoo-dev-panel/profiles/.trash-${p.name}-20261009-1200.toml` }; },
+    "profile.import": () => ({ path: "/home/dev/.config/odoo-dev-panel/profiles/shared.toml" }),
+    "profile.org": (p) => ({ path: p.path ?? "/home/dev/.config/odoo-dev-panel/org.toml" }),
+    "profile.export": (p) => {
+      const data = { name: `${p.root.split("/").pop()} setup`, description: `Exported from ${p.root} on 2026-10-09`, odoo_version: 19, config: { workers: "2" },
+        repos: repos.filter((r) => r.path.startsWith(p.root + "/custom")).map((r) => ({ name: r.name, url: r.state.remotes.origin, branch: r.state.branch, destination: r.installations[0].relative })).filter((r) => r.url) };
+      if (p.name) profiles[p.name] = data;
+      return { data, text: toml(data), notes: ["custom/extensions/client_custom: no remote (or a URL with credentials), left out", "config options taken from /etc/odoo/odoo19/nutech.conf (safe options only; passwords, database and ports are never exported)"], path: p.name ? `/home/dev/.config/odoo-dev-panel/profiles/${p.name}.toml` : null };
+    },
+    "repo.addons_plan": (p) => instances.filter((i) => i.installation === p.installation).map((i, n) => ({ path: i.path, current: (i.options.addons_path ?? "").split(","), add: p.repos, sha: "abc", writable: n !== 1, error: null })),
+    "repo.addons_apply": (p) => ({ path: p.path, changed: true, backup: `${p.path}.bak-20261009-120000` }),
   };
 
   return (message: Json) => {

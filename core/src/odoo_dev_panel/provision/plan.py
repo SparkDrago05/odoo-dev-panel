@@ -41,11 +41,11 @@ def addons_path(spec: ProvisionSpec) -> list[str]:
     result = [f"{spec.root}/odoo/addons"]
     if spec.has_enterprise:
         result.append(f"{spec.root}/enterprise")
-    result += [f"{spec.root}/custom/{c.name}" for c in spec.custom]
+    result += [f"{spec.root}/{c.destination}" for c in spec.custom if c.addons]
     return result
 
 
-def render_conf(spec: ProvisionSpec, sec: Secrets, now: datetime | None = None) -> str:
+def render_conf(spec: ProvisionSpec, sec: Secrets, now: datetime | None = None, addons: list[str] | None = None) -> str:
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "[options]",
@@ -56,10 +56,11 @@ def render_conf(spec: ProvisionSpec, sec: Secrets, now: datetime | None = None) 
         f"db_port = {spec.pg_port}",
         f"db_user = {spec.run_as}",
         f"db_password = {sec.pg_password}",
-        "addons_path = " + ",\n\t".join(addons_path(spec)),
+        "addons_path = " + ",\n\t".join(addons if addons is not None else addons_path(spec)),
     ]
     if spec.http_port is not None:
         lines.append(f"http_port = {spec.http_port}")
+    lines += [f"{key} = {value}" for key, value in spec.config_options.items()]
     return "\n".join(lines) + "\n"
 
 
@@ -70,9 +71,16 @@ def clone_command(url: str, branch: str | None, dest: str) -> str:
     return " ".join(q(part) for part in clone_argv(url, dest, branch) if part != "--")
 
 
+def custom_clone_command(repo, dest: str) -> str:
+    """A custom repository: shallow single-branch by default, full history when the profile asks for it."""
+    from ..git.runner import clone_argv
+
+    return " ".join(q(part) for part in clone_argv(repo.url, dest, repo.branch, repo.shallow) if part != "--")
+
+
 def requirements_files(spec: ProvisionSpec) -> list[str]:
     """requirements.txt of Odoo plus the optional ones of custom repos (resolved at run time if present)."""
-    return [f"{spec.root}/odoo/requirements.txt"] + [f"{spec.root}/custom/{c.name}/requirements.txt" for c in spec.custom]
+    return [f"{spec.root}/odoo/requirements.txt"] + [f"{spec.root}/{c.destination}/requirements.txt" for c in spec.custom]
 
 
 def render_root_script(spec: ProvisionSpec, sec: Secrets) -> str:
@@ -214,8 +222,8 @@ def build_steps(spec: ProvisionSpec, sec: Secrets) -> list[Step]:
         steps.append(Step("enterprise", 2, DEV, "Extract the enterprise archive",
                           [f"extract {q(spec.enterprise_archive)} into {q(spec.root + '/enterprise')} (a single top-level folder is stripped)"]))
     for repo in spec.custom:
-        steps.append(Step(f"custom-{repo.name}", 2, DEV, f"Clone custom repository {repo.name}",
-                          [clone_command(repo.url, repo.branch, f"{spec.root}/custom/{repo.name}")]))
+        steps.append(Step(f"custom-{repo.name}", 2, DEV, f"Clone {repo.name} into {repo.destination}",
+                          [custom_clone_command(repo, f"{spec.root}/{repo.destination}")]))
     reqs = " ".join(f"-r {q(r)}" for r in requirements_files(spec))
     extra = " ".join(q(p) for p in PIP_EXTRA_PACKAGES)
     override = f"--override {q(spec.root + '/.odp-pip-overrides.txt')} " if PIP_OVERRIDES.get(spec.python) else ""

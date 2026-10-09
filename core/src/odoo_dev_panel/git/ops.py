@@ -20,7 +20,7 @@ from typing import Callable
 from . import explain, registry, runner, state, urls
 from .discover import _dot_git, enclosing_repo
 
-OPS = ("fetch", "pull", "switch", "checkout", "clone")
+OPS = ("fetch", "pull", "switch", "checkout", "clone", "bundle")
 OK, WARN, FAIL = "ok", "warn", "fail"
 _REF = re.compile(r"^(?!-)(?!.*\.\.)(?!.*//)[A-Za-z0-9][A-Za-z0-9_./+-]{0,199}(?<![./])$")
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
@@ -41,6 +41,8 @@ class Item:
     skip: str | None = None             # why this repository is left out
     problems: list[dict] = field(default_factory=list)
     level: str = OK                     # ok | warn | fail (fail = skipped)
+    register: dict | None = None        # {installation, repo, fields}: recorded after a clone, or for a kept repo
+    keep: bool = False                  # an existing repository the plan only records
 
     def as_dict(self) -> dict:
         return {"repo": self.repo, "title": self.title, "commands": [runner.display(c) for c in self.commands],
@@ -56,7 +58,7 @@ class Plan:
 
     @property
     def ok(self) -> bool:
-        return not any(c["status"] == FAIL for c in self.checks) and any(i.skip is None for i in self.items)
+        return not any(c["status"] == FAIL for c in self.checks) and any(i.skip is None or i.keep for i in self.items)
 
     def as_dict(self) -> dict:
         runnable = [i for i in self.items if i.skip is None]
@@ -241,6 +243,36 @@ def plan_clone(root: str, url: str, destination: str, ref: str | None = None, sh
     return plan
 
 
+def plan_bundle(root: str, repos: list[dict]) -> Plan:
+    """T5: the repositories of a profile on an existing installation. Missing ones are cloned (each with its own
+    checks); ones already at their folder are kept and only recorded; anything else at a folder is reported."""
+    plan = Plan("bundle")
+    for repo in repos:
+        dest = repo["destination"]
+        target = os.path.join(root, dest)
+        fields = {k: repo[k] for k in ("purpose", "group", "addons") if repo.get(k) is not None}
+        if repo.get("branch"):
+            fields["preferred_branch"] = repo["branch"]
+        fields = registry.clean_assoc({**fields, "destination": os.path.normpath(dest)})
+        if _dot_git(target) is not False:
+            item = Item(target, f"Keep {repo['name']} at {dest}", skip="already there: kept, not fetched or switched",
+                        level=OK, keep=True, register={"installation": root, "repo": target, "fields": fields})
+            plan.items.append(item)
+            continue
+        sub = plan_clone(root, repo["url"], dest, repo.get("branch"), repo.get("shallow", True) is not False, fields)
+        plan.checks += [{**c, "id": f"{repo['name']}:{c['id']}"} for c in sub.checks if c["status"] != OK]
+        item = sub.items[0]
+        item.title = f"Clone {repo['name']} into {dest}"
+        if item.skip is None:
+            item.register = sub.register
+        else:
+            item.skip = "; ".join(c["detail"] for c in sub.checks if c["status"] == FAIL) or item.skip
+        plan.items.append(item)
+    # One failing repository does not block the others: its item is skipped with the reason.
+    plan.checks = [{**c, "status": WARN if c["status"] == FAIL else c["status"]} for c in plan.checks]
+    return plan
+
+
 def _destination(root: str, destination: str, check) -> str | None:
     if not isinstance(destination, str) or not destination.strip():
         check("destination", False, "a destination folder is required")
@@ -317,7 +349,11 @@ async def run_plan(plan: Plan, report: runner.Report, cancelled: Callable[[], bo
     for item in plan.items:
         row = {"repo": item.repo, "commands": [runner.display(c) for c in item.commands], "status": "ok",
                "output": "", "problem": None, "reason": item.skip}
-        if item.skip is not None:
+        if item.skip is not None and item.keep and item.register:
+            reg = item.register
+            registry.register(reg["repo"], reg["installation"], reg["fields"], registry_file)
+            row.update(status="kept", addons_path_entry=addons_entry(reg["repo"]))
+        elif item.skip is not None:
             row["status"] = "skipped"
         elif cancelled():
             row["status"], row["reason"] = "cancelled", "cancelled before it started"
@@ -335,14 +371,14 @@ async def run_plan(plan: Plan, report: runner.Report, cancelled: Callable[[], bo
             if row["status"] == "ok" and plan.op == "pull":
                 files = changed_paths(item.repo, before, _head(item.repo))
                 row.update(changed_files=len(files), changed_modules=modules_of(item.repo, files))
-            if row["status"] == "ok" and plan.op == "clone" and plan.register:
-                reg = plan.register
+            reg = item.register or (plan.register if plan.op == "clone" else None)
+            if row["status"] == "ok" and reg:
                 registry.register(reg["repo"], reg["installation"], reg["fields"], registry_file)
                 row["addons_path_entry"] = addons_entry(reg["repo"])
             report({"step": item.repo, "status": "ok" if row["status"] == "ok" else "fail",
                     "text": row["problem"]["title"] if row["problem"] else ""})
         results.append(row)
-    counts = {k: sum(r["status"] == k for r in results) for k in ("ok", "failed", "skipped", "cancelled")}
+    counts = {k: sum(r["status"] == k for r in results) for k in ("ok", "kept", "failed", "skipped", "cancelled")}
     return {"op": plan.op, "results": results, "counts": counts}
 
 

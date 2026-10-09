@@ -44,18 +44,38 @@ PIP_EXTRA_PACKAGES = ("setuptools<81",)
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
 _CONF_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,60}$")
-_URL = re.compile(r"^(https?://|ssh://|git@)[^\s'\"\\]+$")
 
 
 class SpecError(ValueError):
     pass
 
 
+# Folders the provision itself owns: a custom repository may not land in or above them.
+RESERVED_DIRS = ("odoo", "enterprise", "venv", ".venv")
+REPO_PURPOSES = ("custom", "themes", "other")
+
+# Config options a profile may set in the first config (T1/T6). Machine-specific or secret options are not here.
+CONFIG_OPTIONS = (
+    "workers", "max_cron_threads", "limit_memory_soft", "limit_memory_hard", "limit_time_cpu", "limit_time_real",
+    "limit_time_real_cron", "limit_request", "proxy_mode", "log_level", "dbfilter", "without_demo", "list_db",
+    "server_wide_modules", "unaccent",
+)
+_DEST_PART = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+
+
 @dataclass
 class CustomRepo:
     url: str
-    name: str            # directory under custom/
+    name: str            # label; also the default folder custom/<name>
     branch: str | None = None
+    destination: str = ""  # relative to the root; default custom/<name>. Nested folders are kept as given
+    addons: bool = True    # its modules go on the addons_path
+    purpose: str = "custom"
+    group: str | None = None
+    shallow: bool = True
+
+    def __post_init__(self) -> None:
+        self.destination = self.destination or f"custom/{self.name}"
 
     @classmethod
     def parse(cls, text: str) -> "CustomRepo":
@@ -81,6 +101,7 @@ class ProvisionSpec:
     enterprise_branch: str | None = None
     enterprise_archive: str | None = None
     custom: list[CustomRepo] = field(default_factory=list)
+    config_options: dict[str, str] = field(default_factory=dict)
     config_name: str = "default"
     pg_host: str = "localhost"
     pg_port: int = 5432
@@ -114,9 +135,13 @@ class ProvisionSpec:
             raise SpecError(f"bad Python version: {self.python!r}")
         if not _CONF_NAME.match(self.config_name):
             raise SpecError(f"bad config name: {self.config_name!r}")
+        from ..git import urls
+
         for url in filter(None, [self.odoo_git, self.enterprise_git, *[c.url for c in self.custom]]):
-            if not _URL.match(url):
-                raise SpecError(f"bad git URL: {url!r}")
+            try:
+                urls.validate(url)  # https, ssh, git@, file:// or a local mirror path; never a password in it
+            except urls.UrlError as exc:
+                raise SpecError(f"bad git URL {url!r}: {exc}") from exc
         for branch in filter(None, [self.odoo_branch, self.enterprise_branch, *[c.branch for c in self.custom]]):
             if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_./-]*$", branch):
                 raise SpecError(f"bad branch name: {branch!r}")
@@ -125,6 +150,12 @@ class ProvisionSpec:
         names = [c.name for c in self.custom]
         if len(set(names)) != len(names) or not all(re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", n) for n in names):
             raise SpecError(f"custom repo names must be unique and clean: {names}")
+        _check_destinations(self.custom)
+        for key, value in self.config_options.items():
+            if key not in CONFIG_OPTIONS:
+                raise SpecError(f"config option {key!r} cannot be set by a profile; allowed: {', '.join(CONFIG_OPTIONS)}")
+            if not isinstance(value, str) or "\n" in value or len(value) > 200:
+                raise SpecError(f"config option {key} must be one line of text")
         if not 1 <= self.pg_port <= 65535 or (self.http_port is not None and not 1024 <= self.http_port <= 65535):
             raise SpecError("bad port")
         if not re.match(r"^[A-Za-z0-9_.-]+$", self.pg_host):
@@ -143,6 +174,49 @@ class ProvisionSpec:
         return f"{self.root}/.odp-provision.json"
 
 
+def _check_destinations(repos: list[CustomRepo]) -> None:
+    """Relative, clean, outside the folders provision owns, and no repository inside another."""
+    seen: list[tuple[str, ...]] = []
+    for repo in repos:
+        parts = tuple(repo.destination.split("/"))
+        if repo.destination.startswith("/") or not all(_DEST_PART.match(p) for p in parts) or ".." in parts:
+            raise SpecError(f"{repo.name}: destination {repo.destination!r} must be a clean relative folder, e.g. custom/hr/payroll")
+        if parts[0] in RESERVED_DIRS:
+            raise SpecError(f"{repo.name}: destination {repo.destination!r} is inside {parts[0]}/, which provision manages")
+        if repo.purpose not in REPO_PURPOSES:
+            raise SpecError(f"{repo.name}: purpose must be one of {', '.join(REPO_PURPOSES)}")
+        if repo.group is not None and not _DEST_PART.match(repo.group):
+            raise SpecError(f"{repo.name}: bad group name {repo.group!r}")
+        for other in seen:
+            short, long_ = sorted((parts, other), key=len)
+            if long_[:len(short)] == short:
+                raise SpecError(f"destinations overlap: {'/'.join(other)} and {repo.destination}")
+        seen.append(parts)
+
+
+_REPO_KEYS = {"url", "name", "branch", "destination", "addons", "purpose", "group", "shallow"}
+
+
+def repo_from_dict(data: dict) -> CustomRepo:
+    unknown = set(data) - _REPO_KEYS
+    if unknown:
+        raise SpecError(f"unknown repository field(s): {', '.join(sorted(unknown))}")
+    url = data.get("url")
+    if not isinstance(url, str) or not url:
+        raise SpecError("each repository needs a url")
+    name = data.get("name") or re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+    for key in ("name", "branch", "destination", "purpose", "group"):
+        if data.get(key) is not None and not isinstance(data[key], str):
+            raise SpecError(f"repository {key} must be text")
+    for key in ("addons", "shallow"):
+        if data.get(key) is not None and not isinstance(data[key], bool):
+            raise SpecError(f"repository {key} must be true or false")
+    return CustomRepo(url=url, name=name, branch=data.get("branch") or None,
+                      destination=(data.get("destination") or "").strip("/"),
+                      addons=data.get("addons", True) is not False, purpose=data.get("purpose") or "custom",
+                      group=data.get("group") or None, shallow=data.get("shallow", True) is not False)
+
+
 _SPEC_FIELDS = {
     "dev_user", "run_as", "root", "python", "odoo_git", "odoo_branch", "enterprise_git", "enterprise_branch",
     "enterprise_archive", "config_name", "pg_host", "pg_port", "http_port",
@@ -151,18 +225,22 @@ _SPEC_FIELDS = {
 
 def spec_from_dict(data: dict) -> ProvisionSpec:
     """Build a spec from untrusted input (RPC). Unknown keys are an error; empty values mean default."""
-    unknown = set(data) - _SPEC_FIELDS - {"version", "custom"}
+    unknown = set(data) - _SPEC_FIELDS - {"version", "custom", "config_options"}
     if unknown:
         raise SpecError(f"unknown field(s): {', '.join(sorted(unknown))}")
     version = data.get("version")
     if not isinstance(version, int) or isinstance(version, bool):
         raise SpecError("version must be an integer")
     custom = data.get("custom") or []
-    if not isinstance(custom, list) or not all(isinstance(c, str) for c in custom):
-        raise SpecError("custom must be a list of [NAME=]URL[#BRANCH] strings")
+    if not isinstance(custom, list) or not all(isinstance(c, (str, dict)) for c in custom):
+        raise SpecError("custom must be a list of [NAME=]URL[#BRANCH] strings or repository objects")
+    options = data.get("config_options") or {}
+    if not isinstance(options, dict):
+        raise SpecError("config_options must be an object")
     values = {k: v for k, v in data.items() if k in _SPEC_FIELDS and v not in (None, "")}
     for key, value in values.items():
         expected = int if key in ("pg_port", "http_port") else str
         if not isinstance(value, expected) or isinstance(value, bool):
             raise SpecError(f"{key} has the wrong type")
-    return ProvisionSpec(version=version, custom=[CustomRepo.parse(c) for c in custom], **values)
+    repos = [CustomRepo.parse(c) if isinstance(c, str) else repo_from_dict(c) for c in custom]
+    return ProvisionSpec(version=version, custom=repos, config_options={k: str(v) for k, v in options.items()}, **values)

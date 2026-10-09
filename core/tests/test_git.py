@@ -224,7 +224,7 @@ class PlanTest(GitFixture):
         self.assertIsNone(skip[str(self.pay)])
         self.assertIn("--ff-only", self.all_commands(p))
         result = asyncio.run(ops.run_plan(p, lambda e: None))
-        self.assertEqual(result["counts"], {"ok": 1, "failed": 0, "skipped": 1, "cancelled": 0})
+        self.assertEqual(result["counts"], {"ok": 1, "kept": 0, "failed": 0, "skipped": 1, "cancelled": 0})
         ok = next(r for r in result["results"] if r["status"] == "ok")
         self.assertEqual((ok["changed_files"], ok["changed_modules"]), (1, []))
 

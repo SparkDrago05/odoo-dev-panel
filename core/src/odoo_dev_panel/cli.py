@@ -161,9 +161,50 @@ async def cmd_logs(args) -> int:
     return 0
 
 
+def _provision_params(args) -> dict:
+    """The provision request for service.build: flat fields, or a profile with the flags as the top layer."""
+    from .provision.spec import CustomRepo
+
+    install = {k: v for k, v in {
+        "run_as": args.run_as, "root": args.root, "python": args.python, "odoo_git": args.odoo_git,
+        "odoo_branch": args.odoo_branch, "enterprise_git": args.enterprise_git, "enterprise_branch": args.enterprise_branch,
+        "enterprise_archive": args.enterprise_archive, "http_port": args.http_port, "config_name": args.config_name,
+        "pg_host": args.pg_host, "pg_port": args.pg_port,
+    }.items() if v not in (None, "")}
+    if not (args.profile or args.dest):
+        return {"version": args.odoo_version, "dev_user": args.dev_user, **install, "custom": args.custom}
+    overrides: dict = {"install": install}
+    if args.custom:
+        repos = []
+        for text in args.custom:
+            c = CustomRepo.parse(text)
+            repos.append({k: v for k, v in {"name": c.name, "url": c.url, "branch": c.branch}.items() if v})
+        overrides["repos+"] = repos
+    dests = {}
+    for item in args.dest:
+        name, sep, folder = item.partition("=")
+        if not sep:
+            raise ValueError(f"--dest takes NAME=FOLDER, got {item!r}")
+        dests[name] = folder
+    return {"profile": args.profile, "version": args.odoo_version, "overrides": overrides, "destinations": dests}
+
+
 def _spec_from_args(args):
+    from .provision import service
     from .provision.spec import CustomRepo, ProvisionSpec, SpecError
 
+    if args.profile or args.dest:
+        if args.dev_user:
+            print("odp: --dev-user cannot be combined with --profile (the dev user is you)", file=sys.stderr)
+            return None
+        try:
+            return service.build(_provision_params(args))[0]
+        except (service.RequestError, ValueError) as exc:
+            print(f"odp: {exc}", file=sys.stderr)
+            return None
+    if args.odoo_version is None:
+        print("odp: --version is required (or a --profile that pins one)", file=sys.stderr)
+        return None
     try:
         return ProvisionSpec(
             version=args.odoo_version,
@@ -174,7 +215,8 @@ def _spec_from_args(args):
                 "enterprise_archive": args.enterprise_archive, "http_port": args.http_port,
             }.items() if v},
             custom=[CustomRepo.parse(c) for c in args.custom],
-            config_name=args.config_name, pg_host=args.pg_host, pg_port=args.pg_port,
+            **{k: v for k, v in {"config_name": args.config_name, "pg_host": args.pg_host, "pg_port": args.pg_port}.items()
+               if v is not None},
         )
     except SpecError as exc:
         print(f"odp: {exc}", file=sys.stderr)
@@ -183,41 +225,46 @@ def _spec_from_args(args):
 
 def cmd_provision_plan(args) -> int:
     from .provision import plan as plan_mod
-    from .provision import preflight
+    from .provision import service
 
     spec = _spec_from_args(args)
     if spec is None:
         return 2
-
-    secrets_ = plan_mod.Secrets.generate()
-    script = plan_mod.render_root_script(spec, secrets_)
     if args.script_only:
-        print(script, end="")
+        print(plan_mod.render_root_script(spec, plan_mod.Secrets.generate()), end="")
         return 0
-    checks = preflight.run_preflight(spec)
-    steps = plan_mod.build_steps(spec, secrets_)
-    placeholder = plan_mod.Secrets("<generated at run time>", "<generated at run time>")
-    conf = plan_mod.render_conf(spec, placeholder)
-
+    params = _provision_params(args) if (args.profile or args.dest) else {
+        k: v for k, v in _provision_params(args).items() if v not in (None, "", [])}
+    try:
+        data = service.plan(params, remote=not args.no_remote)
+    except service.RequestError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
     if args.json:
-        from dataclasses import asdict
-
-        _print({"spec": asdict(spec), "preflight": [asdict(c) for c in checks],
-                "steps": [asdict(s) for s in steps], "root_script": script, "config": conf}, True)
-    else:
-        print(f"Provision Odoo {spec.version} as {spec.run_as} in {spec.root}  (dry run: nothing is changed)\n")
-        print("Preflight")
-        for c in checks:
-            print(f"  {c.status.upper():4}  {c.id:18} {c.detail}")
-        print("\nSteps")
-        for s in steps:
-            print(f"  {s.phase}. [{s.actor:5}] {s.title}")
-            for command in s.commands:
-                print(f"       $ {command}")
-        print(f"\nConfig {spec.conf_path}\n" + "".join(f"  | {line}\n" for line in conf.splitlines()))
-        print("Root script (run with: odp provision plan ... --script-only)\n")
-        print("".join(f"  | {line}\n" for line in script.splitlines()))
-    return 1 if preflight.has_failures(checks) else 0
+        _print(data, True)
+        return 0 if data["ok"] else 1
+    print(f"Provision Odoo {spec.version} as {spec.run_as} in {spec.root}  (dry run: nothing is changed)")
+    if data["profile"]:
+        print(f"Profile: {args.profile or 'none (built-in defaults)'}")
+    prev = data["previous"]
+    if prev:
+        print(f"Previous run ({prev['updated_at']}): {prev['status']}, finished {', '.join(prev['completed']) or 'nothing'}; "
+              f"remaining {', '.join(prev['remaining']) or 'nothing'}. Finished parts are reused.")
+    print("\nTree")
+    for row in data["tree"]:
+        print(f"  {spec.root}/{row['path']:40} {row['kind']:10} {row['label']}{'' if row['addons'] else '  (not on addons_path)'}")
+    print("\nPreflight")
+    for c in data["preflight"]:
+        print(f"  {c['status'].upper():4}  {c['id']:22} {c['detail']}")
+    print("\nSteps")
+    for st in data["steps"]:
+        print(f"  {st['phase']}. [{st['actor']:5}] {st['title']}")
+        for command in st["commands"]:
+            print(f"       $ {command}")
+    print(f"\nConfig {spec.conf_path}\n" + "".join(f"  | {line}\n" for line in data["config"].splitlines()))
+    print("Root script (run with: odp provision plan ... --script-only)\n")
+    print("".join(f"  | {line}\n" for line in data["root_script"].splitlines()))
+    return 0 if data["ok"] else 1
 
 
 async def cmd_provision_run(args) -> int:
@@ -461,6 +508,10 @@ def cmd_repo(args) -> int:
             params = {"installation": args.installation, "url": args.url, "destination": args.dest, "ref": args.ref,
                       "shallow": not args.full, "fields": _assoc_fields(args)}
             plan = api.plan("clone", params, snap)
+        elif sub == "apply":
+            plan = api.plan("bundle", {"installation": args.installation, "profile": args.profile}, snap)
+        elif sub == "addons":
+            return _repo_addons(args, snap)
         elif sub == "forget":
             ok = api.forget({"path": os.path.abspath(args.path), "installation": args.installation})
             print("forgotten (no files were touched)" if ok else "not registered")
@@ -510,7 +561,105 @@ def cmd_repo(args) -> int:
             if r.get("addons_path_entry"):
                 print(f"          add to addons_path if wanted: {r['addons_path_entry']}")
         print(", ".join(f"{v} {k}" for k, v in result["counts"].items() if v))
+        done = [r["repo"] for r in result["results"] if r["status"] in ("ok", "kept") and r.get("addons_path_entry")]
+        if plan.op == "bundle" and done:
+            print(f"Review addons_path changes: odp repo addons {args.installation} " + " ".join(shlex.quote(d) for d in done))
     return 0 if not result["counts"]["failed"] else 1
+
+
+def _repo_addons(args, snap) -> int:
+    """Show, per config, what the repositories would add to addons_path; with --apply CONFIG write those configs."""
+    from .git import api
+
+    rows = api.addons_proposal({"installation": args.installation, "repos": [os.path.abspath(r) for r in args.repos]}, snap)
+    if args.json and not args.apply:
+        _print(rows, True)
+        return 0
+    for row in rows:
+        if row["error"]:
+            print(f"{row['path']}: {row['error']}")
+        elif row["add"]:
+            print(f"{row['path']}: add {', '.join(row['add'])}" + ("" if row["writable"] else "  (not writable by you)"))
+        else:
+            print(f"{row['path']}: nothing to add")
+    targets = [r for r in rows if r["path"] in args.apply and r["add"]]
+    missing = set(args.apply) - {r["path"] for r in rows}
+    if missing:
+        print(f"odp: not a config of {args.installation}: {', '.join(sorted(missing))}", file=sys.stderr)
+        return 2
+    if not targets:
+        return 0
+    if not args.yes and input(f"Update {len(targets)} config(s)? A backup of each is kept. [y/N] ").strip().lower() != "y":
+        return 1
+    status = 0
+    for row in targets:
+        try:
+            out = api.addons_apply({"path": row["path"], "add": row["add"], "sha": row["sha"]}, snap)
+            print(f"{row['path']}: updated, backup {out['backup']}")
+        except (api.ApiError, api.NotFound) as exc:
+            print(f"{row['path']}: {exc}", file=sys.stderr)
+            status = 1
+    return status
+
+
+def cmd_profile(args) -> int:
+    """T2/T6: saved profiles and repository bundles."""
+    from .provision import export, profiles
+
+    sub = args.profile_command
+    try:
+        if sub == "list":
+            rows = profiles.list_profiles()
+            org = profiles.org_path()
+            if args.json:
+                _print({"profiles": rows, "folder": str(profiles.profiles_dir()), "org": str(org), "org_exists": org.is_file()}, True)
+                return 0
+            print(f"Org overlay: {org} ({'present' if org.is_file() else 'not present'})")
+            if not rows:
+                print(f"No profiles in {profiles.profiles_dir()}")
+            for r in rows:
+                pin = f"Odoo {r['odoo_version']}" if r["odoo_version"] else "any version"
+                print(f"{r['name']:24} {pin:12} {r['repos']} repo(s)  {r['title'] or ''}" + (f"  ! {r['error']}" if r["error"] else ""))
+            return 0
+        if sub == "show":
+            data = profiles.resolve(args.name, args.odoo_version)
+            if args.json:
+                _print(data, True)
+                return 0
+            print(f"{data['name'] or args.name}: Odoo {data['version']}, root {data['root']}, run as {data['run_as']}")
+            for key, value in sorted(data["install"].items()):
+                print(f"  install.{key} = {value}   ({data['origin'].get('install.' + key)})")
+            for key, value in sorted(data["config"].items()):
+                print(f"  config.{key} = {value}   ({data['origin'].get('config.' + key)})")
+            for n, repo in enumerate(data["repos"]):
+                print(f"  repo {repo.get('name') or repo['url']}: {repo['url']} {repo.get('branch') or '(default branch)'} "
+                      f"-> {repo.get('destination') or 'custom/<name>'}   ({data['origin'].get(f'repos.{n}')})")
+            return 0
+        if sub == "import":
+            print(f"saved {profiles.import_file(os.path.abspath(args.file), args.name, args.overwrite)}")
+            return 0
+        if sub == "delete":
+            moved = profiles.delete(args.name)
+            print(f"moved to {moved}" if moved else f"no profile {args.name}")
+            return 0 if moved else 1
+        if sub == "org":
+            print(profiles.set_org_path(None if args.default else os.path.abspath(args.path)) if (args.default or args.path)
+                  else profiles.org_path())
+            return 0
+        from .discover import scan
+
+        data, notes = export.export_installation(os.path.normpath(args.root), scan.scan(with_databases=False))
+        text = profiles.dump(data)
+        if args.name:
+            print(f"saved {profiles.save(args.name, data, args.overwrite)}")
+        else:
+            print(text, end="")
+        for note in notes:
+            print(f"# note: {note}", file=sys.stderr)
+        return 0
+    except (profiles.ProfileError, export.ExportError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
 
 
 def _assoc_fields(args) -> dict:
@@ -1257,6 +1406,15 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--preferred-branch")
     r.add_argument("--no-addons", action="store_true", help="does not contribute to addons_path")
     r.add_argument("--no-bulk", action="store_true", help="leave out of bulk fetch/pull")
+    r = repo.add_parser("apply", help="clone the repositories of a profile into an installation (kept ones are only recorded)")
+    r.add_argument("installation")
+    r.add_argument("--profile", required=True)
+    r = repo.add_parser("addons", help="what repositories would add to each config's addons_path; --apply CONFIG writes it")
+    r.add_argument("installation")
+    r.add_argument("repos", nargs="+")
+    r.add_argument("--apply", action="append", default=[], metavar="CONFIG", help="update this config (repeatable)")
+    r.add_argument("--yes", action="store_true")
+    r.add_argument("--json", action="store_true")
     r = repo.add_parser("forget", help="remove a repository (or one association) from the list; files stay")
     r.add_argument("path")
     r.add_argument("--installation")
@@ -1273,11 +1431,33 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("path")
     r.add_argument("ref")
     r.add_argument("--confirm", help="type the ref again")
-    for name in ("add", "fetch", "pull", "switch", "checkout"):
+    for name in ("add", "fetch", "pull", "switch", "checkout", "apply"):
         p = repo.choices[name]
         p.add_argument("--plan", action="store_true", help="dry run: checks and exact commands")
         p.add_argument("--yes", action="store_true")
         p.add_argument("--json", action="store_true")
+
+    prof = sub.add_parser("profile", help="installation profiles and repository bundles: list, show, import, export, delete, org").add_subparsers(
+        dest="profile_command", required=True)
+    p = prof.add_parser("list", help="saved profiles and the org overlay")
+    p.add_argument("--json", action="store_true")
+    p = prof.add_parser("show", help="a profile merged with the layers below it, for one Odoo version")
+    p.add_argument("name")
+    p.add_argument("--version", "-V", dest="odoo_version", type=int)
+    p.add_argument("--json", action="store_true")
+    p = prof.add_parser("import", help="check a profile file and copy it into the profiles folder")
+    p.add_argument("file")
+    p.add_argument("--name")
+    p.add_argument("--overwrite", action="store_true")
+    p = prof.add_parser("export", help="sanitized profile of an installation (stdout, or saved with --name)")
+    p.add_argument("root")
+    p.add_argument("--name")
+    p.add_argument("--overwrite", action="store_true")
+    p = prof.add_parser("delete", help="move a saved profile aside (.trash-NAME-TIME.toml)")
+    p.add_argument("name")
+    p = prof.add_parser("org", help="show or set the org overlay file")
+    p.add_argument("path", nargs="?")
+    p.add_argument("--default", action="store_true", help="back to ~/.config/odoo-dev-panel/org.toml")
 
     adopt = sub.add_parser("adopt", help="remember a discovered installation in the registry; changes no Odoo files")
     adopt.add_argument("root")
@@ -1418,7 +1598,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="provision_command", required=True
     )
     def spec_args(target):
-        target.add_argument("--version", "-V", dest="odoo_version", type=int, required=True, help="Odoo major version, e.g. 17")
+        target.add_argument("--version", "-V", dest="odoo_version", type=int, help="Odoo major version, e.g. 17 (optional with a profile that pins it)")
+        target.add_argument("--profile", help="saved profile (~/.config/odoo-dev-panel/profiles/NAME.toml); flags override it")
+        target.add_argument("--dest", action="append", default=[], metavar="NAME=FOLDER",
+                            help="put repository NAME in FOLDER under the root (nested folders kept), repeatable")
         target.add_argument("--dev-user", help="owner of the source trees (default: current user)")
         target.add_argument("--run-as", help="Linux user that runs Odoo (default: odooNN)")
         target.add_argument("--root", help="installation directory (default: /opt/odooNN)")
@@ -1429,9 +1612,9 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--enterprise-branch")
         target.add_argument("--enterprise-archive", help="enterprise .zip or .tar.* file")
         target.add_argument("--custom", action="append", default=[], metavar="[NAME=]URL[#BRANCH]", help="custom addons repository, repeatable")
-        target.add_argument("--config-name", default="default", help="first config file name (default: default)")
-        target.add_argument("--pg-host", default="localhost")
-        target.add_argument("--pg-port", type=int, default=5432)
+        target.add_argument("--config-name", help="first config file name (default: default)")
+        target.add_argument("--pg-host", help="PostgreSQL host (default: localhost)")
+        target.add_argument("--pg-port", type=int, help="PostgreSQL port (default: 5432)")
         target.add_argument("--http-port", type=int)
 
 
@@ -1441,6 +1624,7 @@ def build_parser() -> argparse.ArgumentParser:
     spec_args(run_p)
     run_p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     plan.add_argument("--script-only", action="store_true", help="print only the root script")
+    plan.add_argument("--no-remote", action="store_true", help="skip git ls-remote checks of branches and access")
 
     sub.add_parser("sidecar", help="JSON-RPC server on stdio for the desktop app")
     sub.add_parser("askpass", help="SUDO_ASKPASS helper")
@@ -1481,6 +1665,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_adopt(args)
     if args.command == "discover":
         return cmd_discover(args)
+    if args.command == "profile":
+        return cmd_profile(args)
     if args.command == "repo":
         if args.repo_command in ("add", "fetch", "pull") and getattr(args, "paths", True) == [] and not args.bulk:
             print("odp: give repository paths or --bulk", file=sys.stderr)

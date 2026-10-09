@@ -688,3 +688,20 @@ pre.diff .hunk { color: var(--info); }
   .diff-layout { grid-template-columns: 1fr; }
   .repo-badges { max-width: none; }
 }
+
+/* ---------- Provision wizard and profiles ---------- */
+.wizard-steps { display: flex; gap: 4px; margin: 0 0 4px; padding: 0; list-style: none; counter-reset: step; }
+.wizard-steps li { flex: 1; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--r-md); font-size: var(--fs-sm); color: var(--text-3); background: var(--surface-3); counter-increment: step; }
+.wizard-steps li::before { content: counter(step); display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 9px; font: 600 10.5px/1 var(--font-mono); background: var(--surface); color: var(--text-2); }
+.wizard-steps li.done { color: var(--text-2); }
+.wizard-steps li.done::before { background: var(--success-bg); color: var(--success); }
+.wizard-steps li[aria-current="step"] { color: var(--accent-text); background: var(--accent-bg); }
+.wizard-steps li[aria-current="step"]::before { background: var(--accent); color: var(--accent-fg); }
+.repo-row { display: grid; grid-template-columns: minmax(180px, 2.2fr) minmax(90px, 1fr) minmax(140px, 1.6fr) auto auto auto; gap: 6px; align-items: center; }
+.repo-row .check { font-size: var(--fs-sm); color: var(--text-2); }
+.kv-origin { display: grid; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--surface-3); border: 1px solid var(--border); }
+@media (max-width: 760px) {
+  .repo-row { grid-template-columns: 1fr 1fr; }
+  .repo-row input:first-child { grid-column: 1 / -1; }
+  .wizard-steps li { font-size: var(--fs-xs); padding: 4px 6px; }
+}

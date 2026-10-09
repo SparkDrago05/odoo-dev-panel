@@ -1,4 +1,4 @@
-import { Download, FolderGit2, GitPullRequestArrow, Plus, RefreshCw } from "lucide-react";
+import { Download, FolderGit2, GitPullRequestArrow, Layers, Plus, RefreshCw } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { BulkBar, matches, RepoDetails, RepoFilters, RepoList, useRepos } from "../features/Repos";
 import { Inspector } from "../shell/Chrome";
@@ -27,6 +27,7 @@ export function useRepoWorkspace({ root, selected, onSelect, enabled = true }: {
           <button className="btn sm" disabled={!repos?.length} title="Every repository selected for bulk operations"
             onClick={() => app.setDialog({ kind: "repo-op", op: "fetch", bulk: true, installation: root })}><Download />Fetch all</button>
           <button className="btn sm" disabled={!repos?.length} onClick={() => app.setDialog({ kind: "repo-op", op: "pull", bulk: true, installation: root })}><GitPullRequestArrow />Pull all</button>
+          {root && <button className="btn sm" onClick={() => app.setDialog({ kind: "profile-apply", installation: root })}><Layers />Apply profile…</button>}
           {root && <button className="btn sm primary" onClick={() => app.setDialog({ kind: "repo-add", installation: root })}><Plus />Add repository</button>}
         </div>
       </div>

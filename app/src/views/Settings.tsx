@@ -1,5 +1,6 @@
 import { Monitor, Moon, Settings as Gear, Sun } from "lucide-react";
 import { useApp } from "../state/app";
+import { ProfilesPanel } from "../features/Profiles";
 import { Field, KV, Segmented } from "../ui/primitives";
 import { Panel, View, ViewHead } from "./common";
 
@@ -19,10 +20,13 @@ export function SettingsView() {
             options={[{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }]} />
         </Field>
       </Panel>
+      <Panel title="Profiles and bundles">
+        <ProfilesPanel />
+      </Panel>
       <Panel title="Keyboard">
         <KV items={[
           [<kbd>Ctrl K</kbd>, "Command palette: every page, installation, database, session and action"],
-          [<kbd>Ctrl 1–6</kbd>, "Overview, Sessions, Databases, Doctor, Docker, Services"],
+          [<kbd>Ctrl 1–7</kbd>, "Overview, Sessions, Databases, Doctor, Docker, Services, Repositories"],
           [<kbd>Ctrl B</kbd>, "Collapse or expand the sidebar"],
           [<kbd>Ctrl I</kbd>, "Show or hide the inspector"],
           [<kbd>Ctrl J</kbd>, "Show or hide the output panel"],

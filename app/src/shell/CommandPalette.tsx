@@ -47,6 +47,8 @@ function useCommands(): Command[] {
       const label = installLabel(i);
       c.push({ id: `inst-${i.root}`, group: "Installations", label: `Odoo ${i.version ?? "?"} · ${label}`, detail: i.root, icon: <FolderTree />, keywords: "installation open", run: () => nav({ view: "installation", root: i.root }) });
       c.push({ id: `repos-${i.root}`, group: "Repositories", label: `Repositories of ${label}`, detail: i.root, icon: <FolderGit2 />, keywords: "git branch", run: () => nav({ view: "installation", root: i.root, tab: "repos" }) });
+      c.push({ id: `export-${i.root}`, group: "Repositories", label: `Export ${label} as a profile…`, detail: i.root, icon: <FolderGit2 />, keywords: "profile bundle setup", run: () => app.setDialog({ kind: "profile-export", root: i.root }) });
+      c.push({ id: `apply-${i.root}`, group: "Repositories", label: `Apply a profile to ${label}…`, detail: "clone its repositories", icon: <FolderGit2 />, keywords: "profile bundle", run: () => app.setDialog({ kind: "profile-apply", installation: i.root }) });
       c.push({ id: `repo-add-${i.root}`, group: "Repositories", label: `Add repository to ${label}…`, detail: "clone or register", icon: <FolderGit2 />, keywords: "git clone", run: () => app.setDialog({ kind: "repo-add", installation: i.root }) });
       c.push({ id: `dbs-${i.root}`, group: "Databases", label: `Databases of ${label}`, detail: i.root, icon: <Database />, run: () => nav({ view: "databases", root: i.root }) });
       if (i.venv_ok === false) c.push({ id: `repair-${i.root}`, group: "Fix", label: `Repair venv of ${label}`, detail: i.root, icon: <Stethoscope />, run: () => app.setDialog({ kind: "repair-venv", root: i.root }) });
@@ -68,6 +70,7 @@ function useCommands(): Command[] {
     }
 
     c.push(
+      { id: "profiles", group: "Actions", label: "Profiles and bundles", icon: <Settings />, keywords: "profile bundle org overlay", run: () => nav({ view: "settings" }) },
       { id: "new-install", group: "Actions", label: "New Odoo installation…", icon: <Plus />, keywords: "provision create", run: () => app.setDialog({ kind: "provision" }) },
       { id: "new-docker", group: "Actions", label: "New Docker Odoo…", icon: <Container />, keywords: "compose stack", run: () => app.setDialog({ kind: "docker-new" }) },
       { id: "run", group: "Actions", label: "Run Odoo…", icon: <Play />, keywords: "start upgrade install module", run: () => app.setDialog({ kind: "run" }) },
