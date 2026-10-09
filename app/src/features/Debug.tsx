@@ -5,6 +5,8 @@ import { sessionKey, useApp } from "../state/app";
 import type { Check } from "../types";
 import { Dialog } from "../ui/Dialog";
 import { Checks, Disclosure, type Finished, JobView, useJob } from "../ui/Job";
+import { LogConsole } from "../ui/LogConsole";
+import { ProblemList, type ProblemGroup, SqlList, type SqlSummary } from "../views/Problems";
 import { ago, Badge, Callout, CheckBox, Cmd, CopyButton, Dot, EmptyState, Field, Loading, Segmented } from "../ui/primitives";
 import { Panel } from "../views/common";
 
@@ -309,5 +311,49 @@ export function VscodeDialog({ root, onClose }: { root: string; onClose: () => v
         </div>
       )}
     </Dialog>
+  );
+}
+
+type ExtLog = { source: { kind: "logfile" | "journal" | null; path: string | null; unit: string | null; reason: string | null };
+  text: string; offset: number | null; rotated: boolean; analysis?: { groups: ProblemGroup[] }; sql?: SqlSummary };
+
+/** U8: the log of an instance started outside the app: its config's logfile (followed) or its unit's journal. */
+export function ExternalLog({ path }: { path: string }) {
+  const [log, setLog] = useState<ExtLog | null>(null);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<"log" | "problems" | "sql">("log");
+  const load = useCallback(async () => {
+    setError(null);
+    try { const r = await rpc.request<ExtLog>("instance.logs", { path }); setLog(r); setText(r.text); }
+    catch (e) { setError(String((e as Error).message)); }
+  }, [path]);
+  useEffect(() => { load(); }, [load]);
+  const offset = log?.offset;
+  useEffect(() => {
+    if (log?.source.kind !== "logfile" || offset == null) return;
+    let at = offset;
+    const t = setInterval(async () => {
+      try {
+        const r = await rpc.request<ExtLog>("instance.logs", { path, offset: at });
+        at = r.offset ?? at;
+        if (r.rotated) setText(r.text); else if (r.text) setText((old) => (old + r.text).slice(-2_000_000));
+      } catch { /* the next poll tries again */ }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [path, log?.source.kind, offset]);
+  if (error) return <Callout tone="bad">{error}</Callout>;
+  if (!log) return <Loading>Reading the log…</Loading>;
+  if (!log.source.kind) return <Callout tone="info" title="No log to show">{log.source.reason}</Callout>;
+  const groups = log.analysis?.groups ?? [];
+  return (
+    <Panel flush title={<div className="row tight"><h2>Log</h2><span className="xs dim mono">{log.source.kind === "logfile" ? log.source.path : `journal of ${log.source.unit}`}</span></div>}
+      actions={<div className="row tight">
+        <Segmented label="Show" value={view} onChange={setView} options={[{ value: "log", label: "Log" }, { value: "problems", label: `Problems (${groups.length})` }, ...(log.sql?.queries ? [{ value: "sql" as const, label: `SQL (${log.sql.queries})` }] : [])]} />
+        <button className="btn ghost sm" onClick={load}><RefreshCw />Reload</button>
+      </div>}>
+      {view === "log" ? <div style={{ height: 420 }}><LogConsole text={text} empty="The log is empty." /></div>
+        : view === "sql" && log.sql ? <SqlList sql={log.sql} /> : <ProblemList groups={groups} />}
+    </Panel>
   );
 }

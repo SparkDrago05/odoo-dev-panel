@@ -1,7 +1,7 @@
 import {
   Boxes, Bug, Copy, FileCode2, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
 } from "lucide-react";
-import { DebugPanel } from "../features/Debug";
+import { DebugPanel, ExternalLog } from "../features/Debug";
 import { useModuleCenter } from "../features/ModuleCenter";
 import { PythonPanel } from "../features/PythonEnv";
 import { RuntimeControls } from "../features/Run";
@@ -227,7 +227,8 @@ export function InstanceView({ path, tab = "overview" }: { path: string; tab?: "
           tabs={[{ id: "overview", label: "Overview" }, { id: "debug", label: "Debug", icon: <Bug /> }]} />
         {tab === "debug" ? <DebugPanel path={path} root={inst.installation} /> : <>
         {inst.problems.map((p) => <Callout key={p} tone="warn">{p}</Callout>)}
-        {st.external && <Callout tone="info">This instance runs outside Odoo Dev Panel (pid {st.pid}{st.unit ? `, systemd unit ${st.unit}` : ""}). Its output is not available here{st.unit ? "; see Services for its journal" : ""}.</Callout>}
+        {st.external && <Callout tone="info">This instance runs outside Odoo Dev Panel (pid {st.pid}{st.unit ? `, systemd unit ${st.unit}` : ""}). Its log below comes from the config's logfile or the unit's journal.</Callout>}
+        {st.external && <ExternalLog path={path} />}
 
         <Panel title={<h2>Run with options</h2>}>
           <RuntimeControls fixed={path} />

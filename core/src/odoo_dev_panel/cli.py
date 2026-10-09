@@ -109,8 +109,68 @@ def _print_problems(result: dict, start: int) -> None:
             print(f"  at {g['frame']['file']}:{g['frame']['line']} in {g['frame']['function']}")
 
 
+def _print_sql(summary: dict, as_json: bool) -> None:
+    if as_json:
+        _print(summary, True)
+        return
+    print(f"{summary['queries']} queries, {summary['statements']} statement shape(s)"
+          + ("" if summary["timed"] else " (this Odoo logs no query times: sorted by count)"))
+    for g in summary["top"]:
+        timing = f"{g['total_ms']:10.1f} ms total {g['max_ms']:8.1f} max" if g["total_ms"] is not None else ""
+        print(f"  {g['count']:6}x {timing}  {g['statement'][:140]}")
+
+
+async def _logs_external(args) -> int:
+    """U8: odp logs --config CONFIG."""
+    from . import extlogs, logs, services
+    from .discover import scan
+
+    try:
+        src = extlogs.source(scan.scan(with_databases=False), os.path.abspath(args.config))
+    except extlogs.ExtLogError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    if src["kind"] is None:
+        print(f"odp: no log to read: {src['reason']}", file=sys.stderr)
+        return 1
+    print(f"# {src['path'] or 'journal of ' + src['unit']}", file=sys.stderr)
+    try:
+        if src["kind"] == "journal":
+            text, offset = services.journal(src["unit"], 2000), None
+        else:
+            chunk = extlogs.read(src["path"])
+            text, offset = chunk["text"], chunk["offset"]
+    except (extlogs.ExtLogError, services.ServiceError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    if args.sql:
+        _print_sql(logs.sql_summary(text), args.json)
+        return 0
+    if args.problems:
+        _print_problems(logs.analyze(text, args.level or logs.PROBLEM), 0)
+        return 0
+    level_filter = logs.LevelFilter(args.level) if args.level else None
+    sys.stdout.write(level_filter.feed(text) if level_filter else text)
+    while args.follow and offset is not None:
+        await asyncio.sleep(1)
+        chunk = extlogs.read(src["path"], offset)
+        offset = chunk["offset"]
+        if chunk["text"]:
+            sys.stdout.write(level_filter.feed(chunk["text"]) if level_filter else chunk["text"])
+            sys.stdout.flush()
+    if level_filter:
+        sys.stdout.write(level_filter.flush())
+    return 0
+
+
 async def cmd_logs(args) -> int:
     from . import logs
+
+    if args.config:
+        return await _logs_external(args)
+    if not args.user or not args.id:
+        print("odp: give -u USER and a session id, or --config CONFIG", file=sys.stderr)
+        return 2
 
     done = asyncio.Event()
     level_filter = logs.LevelFilter(args.level) if args.level else None
@@ -125,6 +185,10 @@ async def cmd_logs(args) -> int:
     async def on_ended(params, _conn):
         done.set()
 
+    if args.sql:
+        text, _start = await _with_agent(args.user, lambda c: logs.read_tail(c, args.id))
+        _print_sql(logs.sql_summary(text), args.json)
+        return 0
     if args.problems:
         text, start = await _with_agent(args.user, lambda c: logs.read_tail(c, args.id))
         result = logs.analyze(text, args.level or logs.PROBLEM)
@@ -308,7 +372,7 @@ async def cmd_start(args) -> int:
     params = {
         "db": args.db, "http_port": args.port, "update": args.update, "install": args.install,
         "stop_after_init": args.stop_after_init, "dev": args.dev, "extra": args.extra, "shell": args.shell,
-        "debug_port": args.debug_port, "debug_wait": args.debug_wait,
+        "debug_port": args.debug_port, "debug_wait": args.debug_wait, "log_sql": args.log_sql,
     }
     planned = run.plan(snap, args.instance, params, set(listening_ports()) | ({args.debug_port} if args.debug_port else set()))
     user = planned.pop("user")
@@ -1765,6 +1829,118 @@ def cmd_debug(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_db_meta(args) -> int:
+    """Z1/Z2: read-only Odoo metadata and PostgreSQL sizes of one database."""
+    from .dbintel import meta
+
+    sub, root = args.db_command, args.root if args.root.startswith("docker:") else os.path.normpath(args.root)
+    try:
+        if sub == "models":
+            data = asyncio.run(meta.models(root, args.database, args.search, args.limit, args.offset))
+        elif sub == "model":
+            data = asyncio.run(meta.model(root, args.database, args.model))
+        elif sub == "xmlids":
+            data = asyncio.run(meta.xmlids(root, args.database, args.search, args.model, args.limit, args.offset))
+        elif sub == "sizes":
+            data = asyncio.run(meta.sizes(root, args.database, args.limit))
+        else:
+            data = asyncio.run(meta.count(root, args.database, args.table))
+    except meta.MetaError as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(data, True)
+        return 0
+    if sub == "models":
+        for m in data["models"]:
+            print(f"{m['model']:48} {m['fields']:5} fields  {'transient ' if m['transient'] else ''}{','.join(m['modules'][:4])}")
+        print(f"{data['offset'] + len(data['models'])} of {data['total']} model(s)  (Odoo metadata)")
+    elif sub == "model":
+        print(f"{data['model']}  (table {data['table']}, derived from the name)")
+        for f in data["fields"]:
+            flags = " ".join(x for x, on in (("required", f["required"]), ("stored", f["store"]), ("custom", f["state"] == "manual"),
+                                             (f"related={f['related']}", f["related"])) if on)
+            print(f"  {f['name']:36} {f['ttype']:10} {f['relation'] or '':28} {flags}")
+        print(f"Pointed to by {len(data['incoming'])} field(s):")
+        for f in data["incoming"][:50]:
+            print(f"  {f['model']}.{f['name']} ({f['ttype']})")
+    elif sub == "xmlids":
+        for x in data["xmlids"]:
+            print(f"{x['module']}.{x['name']:50} {x['model']:32} {x['res_id']}{'  noupdate' if x['noupdate'] else ''}")
+        print(f"{data['offset'] + len(data['xmlids'])} of {data['total']} external ID(s)")
+    elif sub == "sizes":
+        print(f"database {data['database_bytes'] / 1e6:.1f} MB, {data['tables_total']} tables  (PostgreSQL; rows are estimates)")
+        for t in data["tables"]:
+            print(f"  {t['table']:48} {t['total_bytes'] / 1e6:10.1f} MB  ~{t['estimate']} rows")
+    else:
+        print(f"{data['table']}: {data['count']}{'+' if data['capped'] else ''} rows")
+    return 0
+
+
+def cmd_perf(args) -> int:
+    """Z3: what slows an installation down right now."""
+    from .database import context
+    from .dbintel import activity
+    from .discover import scan
+    from .provision import execute
+
+    root = os.path.normpath(args.root)
+    if args.grant or args.revoke:
+        try:
+            _inst, ctx = asyncio.run(context.prepare(root))
+            script = activity.grant_script(ctx.conn.user if ctx.conn else "", args.revoke)
+        except (context.NotFound, activity.ActivityError) as exc:
+            print(f"odp: {exc}", file=sys.stderr)
+            return 2
+        print(script)
+        if not args.yes and input("Run this with sudo? [y/N] ").strip().lower() != "y":
+            return 1
+        import tempfile
+
+        fd, path = tempfile.mkstemp(prefix="odp-pg-monitor-", suffix=".sh")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(script)
+        try:
+            code = asyncio.run(execute.sudo_runner(path, _job_report))
+        finally:
+            os.unlink(path)
+        return 0 if code == 0 else 1
+    snap = scan.scan(with_databases=True)
+    names = [d["name"] for e in snap.get("databases", []) if e["installation"] == root for d in e.get("databases", [])]
+    database = args.database or next((x.get("database") for x in snap["processes"]
+                                      if x.get("installation") == root and x.get("database") in names), None) \
+        or (names[0] if names else None)
+    if args.cancel:
+        try:
+            print(asyncio.run(activity.cancel(root, database, args.cancel)))
+            return 0
+        except activity.ActivityError as exc:
+            print(f"odp: {exc}", file=sys.stderr)
+            return 1
+    data = asyncio.run(activity.overview(root, database, snap))
+    if args.json:
+        _print(data, True)
+        return 0
+    for f in data["verdict"]:
+        print(f"[{f['level']:4}] {f['area']:10} {f['title']}  - {f['detail']}")
+    print("\nOdoo processes")
+    for t in data["odoo"]:
+        print(f"  pid {t['pid']:<8} {t['cpu_percent']:6.1f}% CPU {t['rss_bytes'] / 2**20:8.0f} MiB  {t['processes']} proc  "
+              f"{t['instance'] or t['config'] or ''}")
+    pg = data["postgres"]
+    if pg:
+        s = pg["server"]
+        print(f"\nPostgreSQL {s.get('version')}: {s.get('connections')} of {s.get('max_connections')} connections, "
+              f"as {s.get('role')}{' (pg_monitor)' if s.get('monitor') else ''}")
+        for x in pg["sessions"]:
+            q = "(hidden: another role)" if x["hidden"] else " ".join((x.get("query") or "").split())[:100]
+            print(f"  {x['pid']:<8} {x['database'] or '':20} {x['state'] or '':22} {x.get('query_s') or 0:>5}s "
+                  f"{'blocked by ' + ','.join(map(str, x['blocked_by'])) + ' ' if x['blocked_by'] else ''}{q}")
+    elif data["postgres_error"]:
+        print(f"\nPostgreSQL: {data['postgres_error']}")
+    return 0
+
+
 def cmd_tasks(args) -> int:
     """K1-K3: workflows of typed operations."""
     from .tasks import runner, steps, workflow
@@ -1939,6 +2115,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--dry-run", action="store_true", help="print the command, start nothing")
     start.add_argument("--snapshot", action="store_true", help="with --update: snapshot the database first (odp db snapshots)")
     start.add_argument("--arg", dest="extra", action="append", default=[], help="further odoo-bin argument (repeatable)")
+    start.add_argument("--log-sql", action="store_true", help="log every SQL query (odp logs --sql groups them)")
     start.add_argument("--debug-port", type=int, help="run under debugpy on 127.0.0.1:PORT (adds --workers=0)")
     start.add_argument("--debug-wait", action="store_true", help="with --debug-port: wait for the IDE to attach")
 
@@ -1946,13 +2123,15 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--user", "-u")
 
     logs = sub.add_parser("logs", help="print session output")
-    logs.add_argument("--user", "-u", required=True)
+    logs.add_argument("--user", "-u")
+    logs.add_argument("--config", "-c", help="instance started outside the app: its logfile or its unit's journal")
     logs.add_argument("--follow", "-f", action="store_true")
     logs.add_argument("--level", "-l", type=str.upper, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                       help="only records at this level or above, with their tracebacks")
+    logs.add_argument("--sql", action="store_true", help="group the SQL log (--log-sql runs) by statement: count and time")
     logs.add_argument("--problems", "-p", action="store_true",
                       help="group warnings and errors (or --level and above) instead of printing the log")
-    logs.add_argument("id")
+    logs.add_argument("id", nargs="?")
 
     stop_s = sub.add_parser("stop", help="stop a session")
     stop_s.add_argument("--user", "-u", required=True)
@@ -2123,6 +2302,15 @@ def build_parser() -> argparse.ArgumentParser:
     t = dbg.add_parser("open", help="open FILE[:LINE] in the IDE")
     t.add_argument("target")
 
+    pf = sub.add_parser("perf", help="what slows an installation down: Odoo CPU/memory, PostgreSQL sessions, locks")
+    pf.add_argument("root")
+    pf.add_argument("-d", "--database", help="database to connect through (default: one a running instance uses)")
+    pf.add_argument("--cancel", type=int, metavar="PID", help="cancel the running query of one of the role's sessions")
+    pf.add_argument("--grant", action="store_true", help="grant pg_monitor to the role (sudo script, shown first)")
+    pf.add_argument("--revoke", action="store_true", help="revoke pg_monitor from the role (sudo script)")
+    pf.add_argument("--yes", action="store_true")
+    pf.add_argument("--json", action="store_true")
+
     tk = sub.add_parser("tasks", help="workflows of typed operations: list, show, ops, preview, run, retry, history").add_subparsers(
         dest="tasks_command", required=True)
     t = tk.add_parser("list", help="saved workflows and built-in recipes")
@@ -2287,6 +2475,26 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--confirm", help="type the database name to confirm")
     a = db_action("forget", "remove one snapshot folder")
     a.add_argument("backup", metavar="SNAPSHOT", help="absolute path of a snapshot folder")
+    for name, text in (("models", "Odoo models of a database (ir_model), searchable"),
+                       ("model", "one model: fields, relations in and out"),
+                       ("xmlids", "external IDs (ir_model_data), searchable"),
+                       ("sizes", "database size and largest tables (PostgreSQL, estimates)"),
+                       ("count", "exact row count of one table, capped at 100000")):
+        m = db.add_parser(name, help=text)
+        m.add_argument("root", help="installation root or docker:NAME")
+        m.add_argument("database")
+        if name == "model":
+            m.add_argument("model")
+        if name == "count":
+            m.add_argument("table")
+        if name in ("models", "xmlids"):
+            m.add_argument("-q", "--search")
+            m.add_argument("--offset", type=int, default=0)
+        if name == "xmlids":
+            m.add_argument("--model")
+        if name in ("models", "xmlids", "sizes"):
+            m.add_argument("--limit", type=int, default=50)
+        m.add_argument("--json", action="store_true")
     ds = db.add_parser("snapshots", help="snapshots of the installation, newest first")
     ds.add_argument("root", help="installation root, e.g. /opt/odoo17")
     ds.add_argument("database", nargs="?")
@@ -2395,6 +2603,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_modules(args)
     if args.command == "docker":
         return cmd_docker(args)
+    if args.command == "db" and args.db_command in ("models", "model", "xmlids", "sizes", "count"):
+        return cmd_db_meta(args)
+    if args.command == "perf":
+        return cmd_perf(args)
     if args.command == "db":
         try:
             return cmd_db(args)

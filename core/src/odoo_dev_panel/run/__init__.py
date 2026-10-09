@@ -31,6 +31,7 @@ class RunSpec:
     shell: bool = False  # ``odoo-bin shell``: interactive, needs a PTY and a database
     debug_port: int | None = None  # Q2: run under debugpy listening on 127.0.0.1:<port>
     debug_wait: bool = False       # debugpy --wait-for-client
+    log_sql: bool = False          # Z4: --log-sql (every query in the log, with its time on 16+)
 
     @classmethod
     def from_params(cls, params: dict | None) -> "RunSpec":
@@ -46,6 +47,7 @@ class RunSpec:
             shell=bool(params.get("shell")),
             debug_port=params.get("debug_port"),
             debug_wait=bool(params.get("debug_wait")),
+            log_sql=bool(params.get("log_sql")),
         )
         spec.validate()
         return spec
@@ -145,6 +147,8 @@ def build_argv(installation: Installation, instance: Instance, spec: RunSpec, po
         argv.append("--stop-after-init")
     if spec.dev:
         argv.append("--dev=" + ",".join(spec.dev))
+    if spec.log_sql:
+        argv.append("--log-sql")
     argv += spec.extra
     if spec.debug_port is not None:
         # forked workers would not reach the debugger: threaded mode, no cron threads (the config is untouched)

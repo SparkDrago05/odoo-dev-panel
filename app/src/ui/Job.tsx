@@ -62,7 +62,7 @@ export function Disclosure({ title, children, open }: { title: ReactNode; childr
 export type Finished = { run_id: string; ok: boolean; error: string | null } & Record<string, unknown>;
 
 /** Step and finish events of one background job (`<prefix>.step`, `<prefix>.finished`). */
-export function useJob<F extends Finished = Finished>(prefix: "db" | "docker" | "repair" | "provision" | "git" | "modules" | "python" | "debug") {
+export function useJob<F extends Finished = Finished>(prefix: "db" | "docker" | "repair" | "provision" | "git" | "modules" | "python" | "debug" | "perf") {
   const [log, setLog] = useState("");
   const [started, setStarted] = useState(false);
   const [current, setCurrent] = useState<string | null>(null);

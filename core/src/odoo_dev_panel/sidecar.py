@@ -179,6 +179,16 @@ class Sidecar:
             "profile.import": self.h_profile_import,
             "profile.export": self.h_profile_export,
             "profile.org": self.h_profile_org,
+            "instance.logs": self.h_instance_logs,
+            "db.models": self.h_db_models,
+            "db.model": self.h_db_model,
+            "db.xmlids": self.h_db_xmlids,
+            "db.sizes": self.h_db_sizes,
+            "db.count": self.h_db_count,
+            "perf.overview": self.h_perf_overview,
+            "perf.cancel": self.h_perf_cancel,
+            "perf.grant_plan": self.h_perf_grant_plan,
+            "perf.grant_run": self.h_perf_grant_run,
             "debug.presets": self.h_debug_presets,
             "debug.next_port": self.h_debug_next_port,
             "debug.save": self.h_debug_save,
@@ -360,7 +370,7 @@ class Sidecar:
         minimum = params.get("level") or logs.PROBLEM
         if minimum not in logs.LEVELS:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"unknown level {minimum!r}")
-        return {**logs.analyze(text, minimum), "start_offset": start}
+        return {**logs.analyze(text, minimum), "start_offset": start, "sql": logs.sql_summary(text)}
 
     async def h_provision_plan(self, params, _conn):
         """Dry run: preflight, steps, root script (verifier only) and config with placeholder passwords."""
@@ -930,6 +940,167 @@ class Sidecar:
         run_id = self._start_job("python", work, {"kind": p["kind"], "root": (params or {}).get("root"),
                                                   "tool": p.get("tool")})
         return {"run_id": run_id, "kind": p["kind"]}
+
+    async def h_instance_logs(self, params, _conn):
+        """U8: log of an instance started outside the app: its config's logfile (read as you) or its unit's journal.
+        ``offset`` continues a logfile; without it the tail comes with a problem analysis."""
+        from . import extlogs, logs, services
+
+        p = params or {}
+        offset = p.get("offset")
+        if offset is not None and (not isinstance(offset, int) or isinstance(offset, bool) or offset < 0):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "offset is a byte position")
+        try:
+            src = extlogs.source(await self._snap(), p.get("path"))
+            out = {"source": src, "text": "", "offset": None, "start": 0, "rotated": False}
+            if src["kind"] == "logfile":
+                out.update(await asyncio.to_thread(extlogs.read, src["path"], offset))
+            elif src["kind"] == "journal":
+                out["text"] = await services.journal_async(src["unit"], 2000)
+        except (extlogs.ExtLogError, services.ServiceError) as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        if offset is None and out["text"]:
+            out["analysis"] = logs.analyze(out["text"])
+            out["sql"] = logs.sql_summary(out["text"])
+        return out
+
+    # -- Z1-Z4: database intelligence and performance ---------------------------------------
+
+    @staticmethod
+    def _meta_args(params) -> tuple[str, str]:
+        p = params or {}
+        root, database = p.get("root"), p.get("database")
+        if not isinstance(root, str) or not root or not isinstance(database, str) or not database:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "root and database are required")
+        return root, database
+
+    async def _meta(self, coro):
+        from .dbintel import meta
+
+        try:
+            return await coro
+        except meta.MetaError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_db_models(self, params, _conn):
+        """Z1: models of a database from ir_model (search, page)."""
+        from .dbintel import meta
+
+        p = params or {}
+        return await self._meta(meta.models(*self._meta_args(p), p.get("q"), p.get("limit", 50), p.get("offset", 0)))
+
+    async def h_db_model(self, params, _conn):
+        from .dbintel import meta
+
+        return await self._meta(meta.model(*self._meta_args(params), (params or {}).get("model")))
+
+    async def h_db_xmlids(self, params, _conn):
+        from .dbintel import meta
+
+        p = params or {}
+        return await self._meta(meta.xmlids(*self._meta_args(p), p.get("q"), p.get("model") or None, p.get("limit", 50),
+                                            p.get("offset", 0)))
+
+    async def h_db_sizes(self, params, _conn):
+        """Z2: database size and largest tables (PostgreSQL facts, estimates)."""
+        from .dbintel import meta
+
+        return await self._meta(meta.sizes(*self._meta_args(params), (params or {}).get("limit", 50)))
+
+    async def h_db_count(self, params, _conn):
+        """Z2: exact row count of one table, capped."""
+        from .dbintel import meta
+
+        return await self._meta(meta.count(*self._meta_args(params), (params or {}).get("table")))
+
+    async def _perf_target(self, params) -> tuple[str, str | None, dict]:
+        """(root, database to connect through, snapshot). The database defaults to one a running instance uses,
+        else the first database of the role."""
+        p = params or {}
+        root = p.get("root")
+        from .discover import scan
+
+        snap = await asyncio.to_thread(scan.scan, None, True)
+        if not any(i["root"] == root for i in snap["installations"]):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"{root} is not a discovered Odoo installation")
+        names = [d["name"] for e in snap.get("databases", []) if e["installation"] == root for d in e.get("databases", [])]
+        database = p.get("database") or next((x.get("database") for x in snap["processes"]
+                                              if x.get("installation") == root and x.get("database") in names), None) \
+            or (names[0] if names else None)
+        if database is not None and database not in names:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, f"{database} is not a database of this installation's role")
+        return root, database, snap
+
+    async def h_perf_overview(self, params, _conn):
+        """Z3: PostgreSQL sessions, locks and connections (as the role), Odoo process CPU/memory, and a verdict."""
+        from .dbintel import activity
+
+        root, database, snap = await self._perf_target(params)
+        return await activity.overview(root, database, snap)
+
+    async def h_perf_cancel(self, params, _conn):
+        """Cancel the running query of one of the role's own sessions (pg_cancel_backend, never terminate)."""
+        from .dbintel import activity
+
+        root, database, _snap = await self._perf_target(params)
+        if database is None:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "no database to connect through")
+        try:
+            return await activity.cancel(root, database, (params or {}).get("pid"))
+        except activity.ActivityError as exc:
+            raise rpc.RpcError(rpc.CONFLICT, str(exc)) from exc
+
+    async def _grant_plan(self, params):
+        from .database import context
+        from .dbintel import activity
+
+        p = params or {}
+        root = p.get("root")
+        try:
+            _inst, ctx = await context.prepare(root)
+        except context.NotFound as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        checks = []
+        if ctx.conn is None:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "no config of this installation has a db_user")
+        local = not ctx.conn.host or ctx.conn.host.startswith("/") or ctx.conn.host in ("localhost", "127.0.0.1", "::1")
+        checks.append({"id": "local", "status": "ok" if local else "fail",
+                       "detail": "PostgreSQL runs on this machine" if local else
+                       f"PostgreSQL is on {ctx.conn.host}: ask its administrator to grant pg_monitor"})
+        try:
+            script = activity.grant_script(ctx.conn.user, bool(p.get("revoke")))
+        except activity.ActivityError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        return {"root": root, "role": ctx.conn.user, "revoke": bool(p.get("revoke")), "script": script, "checks": checks,
+                "ok": local}
+
+    async def h_perf_grant_plan(self, params, _conn):
+        """The reviewed root script that grants (or revokes) pg_monitor to the installation's role."""
+        return await self._grant_plan(params)
+
+    async def h_perf_grant_run(self, params, _conn):
+        """Run the grant script with one sudo prompt (job kind ``perf``)."""
+        from .provision import execute
+
+        plan = await self._grant_plan(params)
+        if not plan["ok"]:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c["detail"] for c in plan["checks"] if c["status"] == "fail"))
+
+        async def work(report) -> dict:
+            fd, path = tempfile.mkstemp(prefix="odp-pg-monitor-", suffix=".sh")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(plan["script"])
+            self._unlocking, self._purpose = None, "pg_monitor"
+            try:
+                code = await execute.sudo_runner(path, report, {"ODP_ASKPASS_SOCK": self.askpass_path})
+            finally:
+                self._unlocking, self._purpose = None, "unlock"
+                os.unlink(path)
+            if code != 0:
+                raise RuntimeError(f"the script exited with code {code}")
+            return {"role": plan["role"], "revoke": plan["revoke"]}
+
+        return {"run_id": self._start_job("perf", work, {"root": plan["root"]}), "role": plan["role"]}
 
     # -- Q1-Q4: debugging and testing center ------------------------------------------
 

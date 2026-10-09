@@ -193,6 +193,46 @@ def analyze(text: str, minimum: str = PROBLEM) -> dict:
     return {"counts": counts, "groups": ordered, "first_error_line": first_error, "lines": text.count("\n")}
 
 
+# Z4: Odoo's SQL log (--log-sql, odoo.sql_db:DEBUG): "[1.234 ms] query: SELECT ..." (16+) or "query: SELECT ..." (older)
+_SQL = re.compile(r"^(?:\[(?P<ms>\d+(?:\.\d+)?) ms\] )?query: (?P<q>.*)$", re.S)
+_SQL_LITERAL = re.compile(r"'(?:[^']|'')*'|\b\d+(?:\.\d+)?\b")
+_SQL_LIST = re.compile(r"\((?:\s*\?\s*,)+\s*\?\s*\)")
+
+
+def normalize_sql(query: str) -> str:
+    """Same statement with other values: literals become ?, IN lists one (?, ...), whitespace one space."""
+    q = _SQL_LITERAL.sub("?", query)
+    q = _SQL_LIST.sub("(?, ...)", q)
+    return " ".join(q.split())
+
+
+def sql_summary(text: str, top: int = 30) -> dict:
+    """Queries of an SQL log grouped by statement shape: count, total and max time (when Odoo logs it), a sample.
+    Sorted by total time, or by count when the log has no times."""
+    groups: dict[str, dict] = {}
+    total = 0
+    for record in parse(text):
+        if record.logger != "odoo.sql_db":
+            continue
+        m = _SQL.match(record.text)
+        if not m:
+            continue
+        total += 1
+        query = _PERF.sub("", m["q"]).strip()
+        key = normalize_sql(query)
+        ms = float(m["ms"]) if m["ms"] else None
+        g = groups.setdefault(key, {"statement": key[:2000], "count": 0, "total_ms": None, "max_ms": None,
+                                    "sample": query[:2000], "first_line": record.line})
+        g["count"] += 1
+        if ms is not None:
+            g["total_ms"] = round((g["total_ms"] or 0) + ms, 3)
+            if g["max_ms"] is None or ms > g["max_ms"]:
+                g["max_ms"], g["sample"] = ms, query[:2000]
+    timed = any(g["total_ms"] is not None for g in groups.values())
+    rows = sorted(groups.values(), key=lambda g: -(g["total_ms"] or 0) if timed else -g["count"])
+    return {"queries": total, "statements": len(groups), "timed": timed, "top": rows[:top]}
+
+
 async def read_tail(conn, session_id: str, max_bytes: int = 8 * 1024 * 1024) -> tuple[str, int]:
     """Read the last ``max_bytes`` of a session log through its agent. Returns (text, start offset).
 

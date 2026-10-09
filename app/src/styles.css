@@ -727,3 +727,9 @@ pre.diff .hunk { color: var(--info); }
 .frame-link { all: unset; cursor: pointer; color: var(--accent-text, var(--accent)); text-decoration: underline dotted; text-underline-offset: 2px; }
 .frame-link:hover { text-decoration-style: solid; }
 .frame-link:focus-visible { outline: 1px solid var(--accent); border-radius: 2px; }
+
+/* Z1-Z3 */
+.explorer-list { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-md); }
+.size-bar { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; min-width: 60px; }
+.size-bar span { display: block; height: 100%; background: var(--accent); }
+.perf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }

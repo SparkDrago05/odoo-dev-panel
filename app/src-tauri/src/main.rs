@@ -127,6 +127,9 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
     tauri::Builder::default()
+        // U8: the window opens with the size, position and maximized state it was closed with
+        // (Wayland compositors place windows themselves, so there only the size is kept).
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Sidecar::default())
         .invoke_handler(tauri::generate_handler![sidecar_start, sidecar_restart, rpc_send])
         .run(tauri::generate_context!())

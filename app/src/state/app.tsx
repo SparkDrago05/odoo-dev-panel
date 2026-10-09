@@ -16,6 +16,7 @@ export type Route =
   | { view: "services"; name?: string }
   | { view: "repos"; path?: string }
   | { view: "tasks"; name?: string }
+  | { view: "perf"; root?: string }
   | { view: "settings" };
 
 export const sessionKey = (s: { user: string; id: string }) => `${s.user}/${s.id}`;
@@ -49,7 +50,9 @@ export type DialogSpec =
   | { kind: "task-edit"; name?: string; copyOf?: string }
   | { kind: "debug-preset"; instance: string; id?: string }
   | { kind: "debug-start"; id: string }
-  | { kind: "debug-vscode"; root: string };
+  | { kind: "debug-vscode"; root: string }
+  | { kind: "db-explore"; root: string; database: string }
+  | { kind: "perf-grant"; root: string; revoke?: boolean };
 
 // ---------- Preferences ----------
 

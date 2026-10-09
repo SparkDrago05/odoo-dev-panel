@@ -13,6 +13,8 @@ import { RepoAddDialog, RepoDiffDialog, RepoOpDialog } from "../features/RepoDia
 import { RunDialog } from "../features/Run";
 import { TaskRunDialog, WorkflowEditorDialog } from "../features/Tasks";
 import { DebugStartDialog, PresetDialog, VscodeDialog } from "../features/Debug";
+import { DbExplorerDialog } from "../features/DbExplorer";
+import { GrantMonitorDialog } from "../views/Performance";
 import { useApp } from "../state/app";
 
 /** Dialogs any view or the command palette can open, plus the sudo password and confirmation prompts. */
@@ -48,6 +50,8 @@ export function DialogHost() {
       {d?.kind === "profile-apply" && <ApplyProfileDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
       {d?.kind === "debug-preset" && <PresetDialog instance={d.instance} id={d.id} onClose={(saved) => done(saved, "debug")} />}
       {d?.kind === "debug-start" && <DebugStartDialog id={d.id} onClose={(started) => done(started, "debug", "modules")} />}
+      {d?.kind === "db-explore" && <DbExplorerDialog root={d.root} database={d.database} onClose={close} />}
+      {d?.kind === "perf-grant" && <GrantMonitorDialog root={d.root} revoke={d.revoke} onClose={(changed) => done(changed, "perf")} />}
       {d?.kind === "debug-vscode" && <VscodeDialog root={d.root} onClose={close} />}
       {d?.kind === "task-run" && <TaskRunDialog name={d.name} given={d.params} retryOf={d.retryOf} onClose={(ran) => { done(ran, "tasks"); if (ran) app.scan(); }} />}
       {d?.kind === "task-edit" && <WorkflowEditorDialog name={d.name} copyOf={d.copyOf} onClose={(saved) => done(saved, "tasks")} />}

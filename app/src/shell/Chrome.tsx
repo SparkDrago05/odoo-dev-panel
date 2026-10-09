@@ -39,6 +39,7 @@ function useCrumbs(): { label: string; to?: Route }[] {
     case "services": return [{ label: "Services", to: { view: "services" } }, ...(route.name ? [{ label: route.name }] : [])];
     case "repos": return [{ label: "Repositories", to: { view: "repos" } }, ...(route.path ? [{ label: route.path.split("/").filter(Boolean).pop() ?? route.path }] : [])];
     case "tasks": return [{ label: "Tasks", to: { view: "tasks" } }, ...(route.name ? [{ label: route.name }] : [])];
+    case "perf": return [{ label: "Performance" }];
     case "settings": return [{ label: "Settings" }];
   }
 }

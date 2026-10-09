@@ -216,7 +216,7 @@ async def _instance_start_plan(step: dict, env) -> dict:
 
     snap = await env.snapshot(False)
     busy = {p["port"] for p in snap["processes"] if p.get("port")}
-    params = {k: step[k] for k in ("http_port", "dev", "debug_port", "debug_wait") if step.get(k)}
+    params = {k: step[k] for k in ("http_port", "dev", "debug_port", "debug_wait", "log_sql") if step.get(k)}
     if step.get("database"):
         params["db"] = step["database"]
     try:
@@ -371,7 +371,8 @@ OPS: dict[str, Op] = {
     "python.validate": Op("Validate the Python environment", {**_DB_TARGET}),
     "python.install": Op("Install Python packages", {**_DB_TARGET, "packages": "list", "missing": "bool"}, gate=True),
     "instance.start": Op("Start an instance", {"config": "text", "database": "text", "http_port": "int",
-                                               "dev": "list", "debug_port": "int", "debug_wait": "bool"}, ("config",)),
+                                               "dev": "list", "debug_port": "int", "debug_wait": "bool", "log_sql": "bool"},
+                         ("config",)),
     "instance.stop": Op("Stop an instance's sessions", {"config": "text"}, ("config",)),
     "command": Op("Run a command", {"argv": "list", "as": "text", "cwd": "text", **_DB_TARGET}, ("argv",),
                   gate=True, always_gate=True),

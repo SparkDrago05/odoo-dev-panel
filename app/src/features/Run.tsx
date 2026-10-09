@@ -1,4 +1,4 @@
-import { Bug, Camera, Play, TerminalSquare } from "lucide-react";
+import { Bug, Camera, Database, Play, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { rpc } from "../rpc";
 import { useApp } from "../state/app";
@@ -57,6 +57,7 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
   const [debug, setDebug] = useState(false);
   const [debugPort, setDebugPort] = useState("");
   const [debugWait, setDebugWait] = useState(false);
+  const [logSql, setLogSql] = useState(false);
   useEffect(() => {
     if (debug && !debugPort) rpc.request<{ port: number }>("debug.next_port").then((r) => setDebugPort(String(r.port))).catch(() => setDebugPort("5678"));
   }, [debug, debugPort]);
@@ -83,9 +84,10 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
     if (csv(install).length) argv.push("-i", csv(install).join(","));
     if (stopAfterInit) argv.push("--stop-after-init");
     if (dev.length) argv.push("--dev=" + dev.join(","));
+    if (logSql) argv.push("--log-sql");
     if (debug) argv.push("--workers=0", "--max-cron-threads=0");
     return argv.join(" ");
-  }, [current, installation, db, port, update, install, stopAfterInit, dev, debug, debugPort, debugWait]);
+  }, [current, installation, db, port, update, install, stopAfterInit, dev, debug, debugPort, debugWait, logSql]);
 
   const start = async (shell = false) => {
     if (!current || !owner) return;
@@ -106,6 +108,7 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
         stop_after_init: stopAfterInit,
         dev,
         ...(debug ? { debug_port: Number(debugPort), debug_wait: debugWait } : {}),
+        log_sql: logSql,
       });
       await app.startSession(owner, session.id);
       onStarted?.();
@@ -156,6 +159,9 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
       <div className="row wrap">
         <CheckBox checked={debug} onChange={setDebug} title="Run under debugpy so an IDE can attach (needs debugpy in the venv: Python tab)">
           <Bug style={{ width: 13, height: 13, verticalAlign: -2 }} /> Debug with debugpy
+        </CheckBox>
+        <CheckBox checked={logSql} onChange={setLogSql} title="Every SQL query in the log (slower); Problems groups them by statement">
+          <Database style={{ width: 13, height: 13, verticalAlign: -2 }} /> Log SQL
         </CheckBox>
         {debug && <>
           <label className="row tight small">port <input className="mono" style={{ width: 80 }} value={debugPort} aria-label="debugpy port" onChange={(e) => setDebugPort(e.target.value.replace(/\D/g, ""))} /></label>

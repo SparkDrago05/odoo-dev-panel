@@ -1,4 +1,4 @@
-import { Archive, Camera, Copy, Database as DbIcon, Eraser, History, Lock, RefreshCw, RotateCcw, Trash2, Upload } from "lucide-react";
+import { Archive, Camera, Copy, Database as DbIcon, Eraser, History, Lock, RefreshCw, RotateCcw, Telescope, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { rpc } from "../rpc";
 import { Inspector, InspectorSection } from "../shell/Chrome";
@@ -208,6 +208,12 @@ export function DatabasesView({ root: routeRoot, db }: { root?: string; db?: str
               ["Filestore", <span className="row tight"><Dot tone={d.filestore_exists ? "ok" : d.filestore_exists === false ? "warn" : "idle"} />{d.filestore_exists ? "present" : d.filestore_exists === false ? "missing" : "not readable"}</span>],
             ]} />
             {d.filestore && <code className="xs break dim">{d.filestore}</code>}
+          </InspectorSection>
+          <InspectorSection title="Explore">
+            <div className="action-stack">
+              <button className="btn" onClick={() => app.setDialog({ kind: "db-explore", root, database: d.name })}><Telescope />Models, external IDs, size…</button>
+            </div>
+            <span className="xs dim">Read-only: Odoo metadata apart from PostgreSQL facts.</span>
           </InspectorSection>
           <InspectorSection title="Back up and copy">
             <div className="action-stack">

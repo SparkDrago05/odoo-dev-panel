@@ -10,7 +10,34 @@ export type ProblemGroup = {
   frame?: { file: string; line: number; function: string } | null;
   count: number; first_line?: number; last_line?: number; first_time?: string; last_time: string; dbs?: string[]; sample: string;
 };
-type Analysis = { counts: Record<Level, number>; groups: ProblemGroup[]; first_error_line: number | null; start_offset: number };
+export type SqlSummary = { queries: number; statements: number; timed: boolean;
+  top: { statement: string; count: number; total_ms: number | null; max_ms: number | null; sample: string; first_line: number }[] };
+type Analysis = { counts: Record<Level, number>; groups: ProblemGroup[]; first_error_line: number | null; start_offset: number; sql?: SqlSummary };
+
+/** Z4: queries of an SQL log (runs with --log-sql) grouped by statement shape. */
+export function SqlList({ sql }: { sql: SqlSummary }) {
+  const [open, setOpen] = useState<number | null>(null);
+  if (!sql.queries) return <EmptyState icon={<AlertTriangle />} title="No SQL in this log">Start the run with "Log SQL" (odp start --log-sql) to see every query here.</EmptyState>;
+  const max = Math.max(...sql.top.map((g) => (sql.timed ? g.total_ms ?? 0 : g.count)), 1);
+  return (
+    <div className="stack tight" style={{ padding: 8 }}>
+      <span className="small muted">{sql.queries} queries, {sql.statements} statement shape(s){sql.timed ? ", by total time" : "; this Odoo logs no query times, so by count"}</span>
+      <div className="list">
+        {sql.top.map((g, i) => (
+          <div key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="list-row clickable" role="button" tabIndex={0} onClick={() => setOpen(open === i ? null : i)} onKeyDown={(e) => { if (e.key === "Enter") setOpen(open === i ? null : i); }}>
+              <span className="mono xs nowrap" style={{ minWidth: 60, textAlign: "right" }}>{g.count}×</span>
+              {sql.timed && <span className="mono xs nowrap" style={{ minWidth: 150 }}>{(g.total_ms ?? 0).toFixed(1)} ms · max {(g.max_ms ?? 0).toFixed(1)}</span>}
+              <div className="size-bar" style={{ width: 80 }} aria-hidden><span style={{ width: `${((sql.timed ? g.total_ms ?? 0 : g.count) / max) * 100}%` }} /></div>
+              <code className="xs truncate grow">{g.statement}</code>
+            </div>
+            {open === i && <div style={{ padding: "0 12px 10px" }}><pre className="block">{g.sample}</pre><span className="xs dim">first at line {g.first_line}{sql.timed ? "; sample is the slowest one" : ""}</span></div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** Q3: open a traceback frame in the IDE; errors go to the app's toasts. */
 export function openFrame(file: string, line: number) {
@@ -88,7 +115,10 @@ export function Problems({ user, id, state }: { user: string; id: string; state:
         <span className="grow" />
         <button className="btn ghost sm" onClick={load} disabled={loading}><RefreshCw />{loading ? "Reading…" : "Refresh"}</button>
       </div>
-      {!result ? <Loading>Reading log…</Loading> : <ProblemList groups={result.groups} />}
+      {!result ? <Loading>Reading log…</Loading> : <>
+        <ProblemList groups={result.groups} />
+        {result.sql && result.sql.queries > 0 && <><div className="term-bar"><span className="small strong">SQL</span></div><SqlList sql={result.sql} /></>}
+      </>}
     </div>
   );
 }

@@ -445,6 +445,42 @@ export function createMock(deliver: Deliver) {
   };
   let taskCurrent: { run: string; cancel: boolean } | null = null;
   const handlers: Record<string, (p: Json) => Json | Promise<Json>> = {
+    "db.models": (p) => {
+      const all = [["account.move", "Journal Entry", 412, "account"], ["res.partner", "Contact", 247, "base,account,sale,mail"], ["res.partner.bank", "Bank Accounts", 72, "base"],
+        ["sale.order", "Sales Order", 198, "sale,sale_stock"], ["sale.order.line", "Sales Order Line", 131, "sale"], ["nutech.margin.band", "Margin Band", 9, "nutech_sale"], ["mail.message", "Message", 61, "mail"]]
+        .filter(([m, n]) => !p.q || String(m).includes(p.q) || String(n).toLowerCase().includes(String(p.q).toLowerCase()));
+      return { source: "odoo", total: all.length, limit: p.limit, offset: p.offset, models: all.map(([model, name, fields, modules]) => ({ model, name, transient: false, state: model === "nutech.margin.band" ? "manual" : "base", fields, modules: String(modules).split(","), table: String(model).replace(/\./g, "_") })) };
+    },
+    "db.model": (p) => ({ source: "odoo", model: p.model, table: p.model.replace(/\./g, "_"),
+      fields: [["name", "char", null, true, true, "Name"], ["partner_id", "many2one", "res.partner", true, true, "Customer"], ["order_line", "one2many", "sale.order.line", false, true, "Order Lines"],
+        ["amount_total", "monetary", null, false, true, "Total"], ["margin_band", "char", null, false, false, "Margin band"], ["x_studio_note", "text", null, false, true, "Note"]]
+        .map(([name, ttype, relation, required, store, label]) => ({ name, ttype, relation, relation_field: null, relation_table: null, required, readonly: false, store, state: String(name).startsWith("x_") ? "manual" : "base", related: null, label, modules: ["sale"] })),
+      incoming: [{ model: "sale.order.line", name: "order_id", ttype: "many2one" }, { model: "account.move", name: "sale_order_ids", ttype: "many2many" }],
+      outgoing: [{ field: "partner_id", ttype: "many2one", model: "res.partner" }] }),
+    "db.xmlids": (p) => ({ source: "odoo", total: 2, limit: 50, offset: 0, xmlids: [{ module: "base", name: "main_company", model: "res.company", res_id: 1, noupdate: true }, { module: "base", name: "main_partner", model: "res.partner", res_id: 1, noupdate: true }].filter((x) => !p.q || `${x.module}.${x.name}`.includes(p.q)) }),
+    "db.sizes": () => ({ source: "postgresql", database_bytes: 811_300_000, tables_total: 3317, note: "", tables: [["ir_attachment", 133_700_000, 8177], ["odoocms_class_attendance_line", 85_200_000, 480436], ["mail_message", 81_700_000, 163171], ["account_move_line", 40_100_000, 91230], ["res_partner", 3_900_000, 1824]].map(([table, total_bytes, estimate]) => ({ table, total_bytes, table_bytes: Number(total_bytes) * 0.7, estimate })) }),
+    "db.count": (p) => ({ source: "postgresql", table: p.table, count: p.table === "odoocms_class_attendance_line" ? 100000 : 1824, capped: p.table === "odoocms_class_attendance_line", cap: 100000 }),
+    "perf.overview": (p) => ({ root: p.root, database: "nutech_prod", postgres_error: null, at: Date.now() / 1000,
+      verdict: [
+        { id: "long-queries", area: "queries", level: "warn", title: "1 query(ies) running for 10s or more", detail: "pid 51990 34s" },
+        { id: "blocked", area: "postgres", level: "warn", title: "1 session(s) wait for a lock", detail: "blocked by pid 51990" },
+        { id: "dev-51234", area: "config", level: "info", title: "Odoo nutech runs with --dev", detail: "assets and views are re-read on every request; expect slower pages" },
+        { id: "visibility", area: "visibility", level: "info", title: "Other roles' queries are hidden (2 session(s))", detail: "odoo19 is not a member of pg_monitor; a one-time grant shows every session" }],
+      odoo: [{ pid: 51234, user: "odoo19", config: "/etc/odoo/odoo19/nutech.conf", instance: "nutech", database: "nutech_prod", port: 8072, processes: 1, cpu_percent: 37.5, rss_bytes: 690_000_000 }],
+      postgres: { server: { max_connections: 100, connections: 9, version: "16.15 (Ubuntu)", role: "odoo19", monitor: false }, locks: [{ mode: "AccessShareLock", granted: true, n: 14 }, { mode: "RowExclusiveLock", granted: true, n: 3 }, { mode: "ShareLock", granted: false, n: 1 }],
+        sessions: [
+          { pid: 51990, database: "nutech_prod", role: "odoo19", application: "odoo-51234", client: null, state: "active", wait_event_type: null, wait_event: null, connected_s: 4000, xact_s: 35, query_s: 34, query: "UPDATE stock_quant SET quantity = quantity - 1 WHERE id IN (SELECT id FROM stock_quant WHERE product_id = 4211 FOR UPDATE)", blocked_by: [], mine: true, hidden: false },
+          { pid: 51991, database: "nutech_prod", role: "odoo19", application: "odoo-51234", client: null, state: "active", wait_event_type: "Lock", wait_event: "transactionid", connected_s: 3000, xact_s: 12, query_s: 12, query: "UPDATE stock_quant SET reserved_quantity = 0 WHERE id = 88", blocked_by: [51990], mine: true, hidden: false },
+          { pid: 52001, database: "nutech_prod", role: "odoo19", application: "odoo-51234", client: null, state: "idle", wait_event_type: "Client", wait_event: "ClientRead", connected_s: 9000, xact_s: null, query_s: 3, query: "COMMIT", blocked_by: [], mine: true, hidden: false },
+          { pid: 3121, database: "dummy_client", role: "odoo15", application: "", client: null, state: "active", wait_event_type: null, wait_event: null, connected_s: 31238, xact_s: 2, query_s: 2, query: null, blocked_by: [], mine: false, hidden: true }] } }),
+    "perf.cancel": (p) => ({ pid: p.pid, cancelled: true }),
+    "perf.grant_plan": (p) => ({ root: p.root, role: "odoo19", revoke: !!p.revoke, ok: true, checks: [{ id: "local", status: "ok", detail: "PostgreSQL runs on this machine" }],
+      script: `#!/usr/bin/env bash\nset -euo pipefail\n# Let odoo19 read every session's activity (pg_monitor: read-only statistics, not superuser)\ncd /tmp && sudo -u postgres psql -X -v ON_ERROR_STOP=1 -c '${p.revoke ? "REVOKE pg_monitor FROM" : "GRANT pg_monitor TO"} "odoo19"'\n` }),
+    "perf.grant_run": () => job("perf", ["root-script"], { role: "odoo19" }),
+    "instance.logs": (p) => (p.path.includes("legacy") || p.path.endsWith("odoo.conf")
+      ? { source: { kind: "logfile", path: "/var/log/odoo/odoo16.log", unit: null, reason: null }, text: p.offset == null ? LOG("legacy").repeat(2) : "", offset: 5000, rotated: false,
+          ...(p.offset == null ? { analysis: { groups: [{ id: "g1", level: "ERROR", logger: "odoo.http", title: "AttributeError: 'NoneType' object has no attribute 'name'", exception: "AttributeError", frame: { file: "/srv/odoo16-legacy/server/addons/sale/models/sale_order.py", line: 88, function: "_compute" }, count: 2, last_time: "2026-10-08 09:31:02", sample: "Traceback…" }] } } : {}) }
+      : { source: { kind: null, path: null, unit: null, reason: "the config sets no logfile, so Odoo writes to the stdout of whoever started it" }, text: "", offset: null, rotated: false }),
     "debug.presets": (p) => ({ presets: debugPresets.filter((x) => !p?.instance || x.instance === p.instance), file: "/home/dev/.config/odoo-dev-panel/debug-presets.json", error: null }),
     "debug.next_port": () => ({ port: 5678 + debugPresets.length + (debugPresets.some((x) => x.port === 5679) ? 1 : 0) }),
     "debug.save": (p) => {
