@@ -10,10 +10,16 @@ One control center for the Odoo development environments on an Ubuntu workstatio
 - **Modules:** a dependency view of any config's addons paths, drawn as a picture per module: depends, required by, missing, shadowed and cyclic modules. Pick a database to see each module's state in it (installed, to upgrade, not in the database), modules installed at another version than the manifest, and modules the database holds that the addons_path does not have. Manifests are read, never imported.
 - **Compare** two configs, two installations, or the installed modules of two databases: Odoo version, git commit, Python, venv packages, addons paths, options and module states, with expected differences marked.
 - **Docker:** create an Odoo stack (Odoo + PostgreSQL in containers) with one dialog, nothing installed on the machine. Odoo containers sit next to native installations: image, version, compose project, ports, and where config, addons and data live on the host. Start, stop, restart, read the log with problems grouped, upgrade modules, back up, snapshot, restore, clone and drop databases of a container with its own PostgreSQL container. Doctor checks port clashes, a stopped database container, exit codes, missing mounts and unreadable configs.
-- **Provision** a new installation for Odoo 15–20 with a pinned Python, a venv, a PostgreSQL role and a first config.
+- **Provision** a new installation for Odoo 15–20 with a pinned Python, a venv, a PostgreSQL role and a first config, from scratch or from a **profile** (TOML defaults plus a list of repositories, shareable without secrets).
+- **Git workspace:** every repository of every installation with branch, changes and sync state; fetch, fast-forward pull, switch, clone and `addons_path` updates after a plan. Nothing destructive (no reset, clean, force or push); other users' repositories are only read.
+- **Module center:** modules touched by uncommitted work with a suggestion, manifest checks, upgrade or install with a snapshot first, tests in a throwaway database (dropped when they pass), and a minimal scaffold.
+- **Python environment:** requirement status of the venv against Odoo's and your repositories' requirement files, conflicts, installs with `uv` as the run-as user, import validation, and dev tools (debugpy, rtlcss, wkhtmltopdf with patched Qt).
+- **Tasks:** saved workflows of these operations (for example snapshot, upgrade, test), previewed with every command and who runs it, data-changing steps confirmed, retry from the failed step, run history.
+- **Debug:** start Odoo under debugpy as its own user with saved presets and attach VS Code; attach entries merged into `launch.json`; module tests under the debugger; every traceback line opens the file at that line in your IDE.
+- **Performance:** Odoo CPU and memory, PostgreSQL sessions, lock waits, long queries and connection use, with a verdict on where a slowdown comes from; a read-only explorer of models, fields, relations, external IDs and table sizes; an SQL log grouped by statement.
 - A desktop app and the `odp` CLI with the same features.
 
-Status: pre-release. Ubuntu 24.04 and 26.04, x86_64.
+Status: active development, released on [GitHub](https://github.com/SparkDrago05/odoo-dev-panel/releases). Ubuntu 24.04 and 26.04, x86_64.
 
 ## Install
 

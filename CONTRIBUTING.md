@@ -49,7 +49,7 @@ cd app && pnpm install && pnpm tauri build
 | Path | Content |
 |---|---|
 | `core/` | Python core and `odp` CLI. Standard library only: no third-party runtime dependencies |
-| `app/` | Tauri v2 + React + TypeScript desktop app. A thin client of the core over JSON-RPC |
+| `app/` | Tauri v2 + React + TypeScript desktop app. A thin client of the core over JSON-RPC. `pnpm dev` in a plain browser answers from the fixtures in `app/src/dev/mock.ts`, no core needed |
 | `packaging/` | Runtime build, `.deb` maintainer scripts, tmpfiles.d |
 | `spike/` | Container acceptance tests and dev host setup |
 | `docs/` | User docs |
@@ -61,10 +61,10 @@ Every change needs the checks CI runs:
 ```sh
 ./dev.sh test                                        # core unit tests
 uvx ruff check core/src core/tests --select F        # unused imports and the like
-cd app && pnpm exec tsc --noEmit                     # frontend types
+cd app && pnpm exec tsc --noEmit && pnpm test        # frontend types and unit tests
 ```
 
-Changes to discovery, provisioning, agents, run or databases also need the matching container test. They use LXD (`sudo snap install lxd && lxd init --auto`) and fresh Ubuntu 24.04 and 26.04 containers, and never touch your machine:
+Changes to a feature also need its container test. They use LXD (`sudo snap install lxd && lxd init --auto`) and fresh Ubuntu 24.04 and 26.04 containers, and never touch your machine:
 
 | Test | Covers |
 |---|---|
@@ -72,6 +72,11 @@ Changes to discovery, provisioning, agents, run or databases also need the match
 | `spike/layouts-test.sh` | a `$HOME` clone and Odoo's .deb layout: discover, databases, run |
 | `spike/db-test.sh` | backup, restore, clone, drop, neutralize |
 | `spike/provision-test.sh`, `spike/repair-test.sh` | provision and venv repair (need the `.deb`) |
+| `spike/git-test.sh`, `spike/profile-test.sh` | Git workspace, profiles and bundles |
+| `spike/modules-test.sh`, `spike/python-test.sh` | module center, Python environment and dev tools |
+| `spike/tasks-test.sh` | workflows, gates, retry |
+| `spike/debug-test.sh` | debugpy presets with a real debugger attach, launch.json merge |
+| `spike/perf-test.sh` | performance, database explorer, SQL log, logs of outside instances |
 
 Run them as `script -qec "spike/<test>.sh" /dev/null > spike/.out/<test>.log`.
 

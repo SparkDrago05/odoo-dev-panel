@@ -67,6 +67,61 @@ The clone is kept and marked NOT neutralized; the source is never changed. Fix t
 **Where did a dropped database's files go?**
 The filestore is moved to `<filestore base>/.trash-<db>-<time>`, never deleted. Remove it yourself when you no longer need it.
 
+## Repositories
+
+**A repository shows its owner's name and Fetch, Pull and Switch are disabled.**
+It belongs to another Linux user (often the run-as user) and is shown read-only. The app reads it with a per-command `safe.directory` and never writes it. Pull as that user, or make the developer its owner.
+
+**Pull skips a repository: "has uncommitted changes" or "diverged from …".**
+Only fast-forward pulls run. Commit or stash your changes, or merge in a terminal; the app never resets, cleans or forces.
+
+## Module tests and Python
+
+**A test run failed and the `odp_test_*` database is still there.**
+It is kept on purpose so you can look at it. Drop it from the test history (Modules tab) or with `odp modules drop-test <id>`.
+
+**A package shows "wrong version" after installing it.**
+Restart the Odoo processes of that installation: a running process keeps the old version loaded. Validate imports checks the venv as Odoo would load it.
+
+## Tasks
+
+**"workflow changed since that run; start a new run instead of a retry".**
+Retry runs the exact workflow file of the failed run. Edited workflows start fresh.
+
+**A step failed its checks in the preview but the workflow can still run.**
+Later steps can depend on earlier ones (a clone a later step uses), so the preview may fail them. Each step is planned again just before it runs; a step whose checks still fail stops the run before anything runs.
+
+**A command step fails with "is not in /usr/local/bin:/usr/bin:/bin".**
+A step run as the run-as user needs a program on the system PATH or an absolute path in `argv`.
+
+## Debugging
+
+**"debugpy is not in <venv>".**
+Install it from the installation's Python tab (Development tools) or `odp python tool debugpy --root <root>`.
+
+**"something already listens on port 5678".**
+Another debug session or program holds the preset's port. Stop it, or edit the preset's debugpy port (and write the VS Code entries again).
+
+**Breakpoints in a request are not hit.**
+Debug runs add `--workers=0`; if you started Odoo yourself with workers, requests run in forked children the debugger does not see. With `--dev=reload` Odoo restarts itself outside the debugger after a file change: start the preset again.
+
+**VS Code launch.json is not written: "has comments or trailing commas".**
+The file is JSONC and is never rewritten, so your comments survive. Paste the entries the dialog shows (or `odp debug vscode <root>` prints) into its `configurations`.
+
+**Clicking a traceback line does nothing.**
+No IDE was found. Set `ODP_IDE` (for example `ODP_IDE=code` or `ODP_IDE=pycharm`) in the environment the app starts with.
+
+## Performance
+
+**Other sessions show "(query hidden: another role)".**
+The installation's role sees only its own sessions' queries. **Grant pg_monitor…** (or `odp perf <root> --grant`) lets it read every session; `--revoke` takes it back. On a PostgreSQL server on another machine, ask its administrator.
+
+**"session N is not a running query of this installation's role".**
+Cancel only works on an active query of the role's own sessions. Other roles' queries are cancelled by their owner or the PostgreSQL administrator.
+
+**An instance started outside the app shows no log.**
+Its output went to the terminal or IDE that started it. Set an absolute `logfile` in its config that you can read (for example in the installation folder), or run it as a systemd unit, and its log appears on its page.
+
 ## Logs and receipts
 
 | What | Where |
@@ -76,5 +131,9 @@ The filestore is moved to `<filestore base>/.trash-<db>-<time>`, never deleted. 
 | Agent state and session logs | `~/.local/state/odoo-dev-panel/` of the run-as user |
 | Provision receipt | `<installation root>/.odp-provision.json` |
 | Repair and database receipts | `~/.local/state/odoo-dev-panel/{repairs,db}/` of your user |
+| Workflow run history | `~/.local/state/odoo-dev-panel/tasks/history.jsonl` |
+| Module test history | `~/.local/state/odoo-dev-panel/module-tests.json` |
+| Workflows, profiles, debug presets | `~/.config/odoo-dev-panel/{workflows/,profiles/,debug-presets.json}` |
+| Grouped SQL queries of a `--log-sql` run | Problems view; `odp logs -u <user> --sql <id>` |
 
 Receipts and logs never contain passwords. When you report a bug, attach the receipt and the output of `odp --json doctor`, after checking them for client names you do not want to share.
