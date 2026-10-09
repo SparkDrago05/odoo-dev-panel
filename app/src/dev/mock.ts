@@ -195,6 +195,30 @@ const toml = (d: Json) => {
   return out.join("\n") + "\n";
 };
 
+// ---------- Module center ----------
+const modCenter = (p: Json) => {
+  const db = p.database;
+  const mk = (name: string, path: string, o: Json = {}) => ({ name: name.replace(/_/g, " "), version: "19.0.1.0.0", path, addons_path: path.split("/").slice(0, -1).join("/"), depends: ["base"], required_by: [], installable: true, loadable: true, own: true, problems: [], repo: path.split("/").slice(0, -1).join("/"), ...(db ? { db_state: "installed", db_version: "19.0.1.0.0", version_differs: false } : {}), ...o });
+  const C = "/opt/odoo19/custom";
+  const ch = (name: string, path: string, o: Json) => ({ name, path, repo: path.split("/").slice(0, -1).join("/"), files: [], kinds: [], new: false, removed: false, dependency_changed: [], ...o });
+  const modules: Json = {
+    base: { ...mk("base", "/opt/odoo19/odoo/odoo/addons/base", { own: false, repo: "/opt/odoo19/odoo", depends: [], required_by: ["adm_core", "exam_core", "hr_payroll_pk"] }) },
+    adm_core: mk("adm_core", `${C}/cms/admissions/adm_core`, { required_by: ["adm_portal", "exam_core"], change: ch("adm_core", `${C}/cms/admissions/adm_core`, { files: [{ path: "models/applicant.py", status: "M", kind: "python" }, { path: "views/applicant_views.xml", status: "M", kind: "data" }], kinds: ["python", "data"], action: "upgrade", why: "manifest or data files (XML/CSV) changed: they load on upgrade (-u)" }) }),
+    adm_portal: mk("adm_portal", `${C}/cms/admissions/adm_portal`, { depends: ["adm_core"], change: ch("adm_portal", `${C}/cms/admissions/adm_portal`, { dependency_changed: ["adm_core"], action: "review", why: "depends on changed adm_core: upgrade only if it relies on what changed" }) }),
+    exam_core: mk("exam_core", `${C}/cms/examinations/exam_core`, { depends: ["adm_core"], ...(db ? { db_version: "19.0.0.9.0", version_differs: true } : {}) }),
+    exam_results: mk("exam_results", `${C}/cms/examinations/exam_results`, { depends: ["exam_core"], change: ch("exam_results", `${C}/cms/examinations/exam_results`, { files: [{ path: "__manifest__.py", status: "??", kind: "manifest" }, { path: "models/result.py", status: "??", kind: "python" }], kinds: ["manifest", "python"], new: true, action: "install", why: "a new module: install it (-i) where it is needed" }), ...(db ? { db_state: null } : {}) }),
+    hr_payroll_pk: mk("hr_payroll_pk", `${C}/hr/payroll/hr_payroll_pk`, { version: "18.0.1.2.0", problems: [{ code: "series-version", level: "warn", text: "version 18.0.1.2.0 does not start with the installation's series 19.0" }, { code: "missing-files", level: "error", text: "data lists files that do not exist: views/old_report.xml" }] }),
+    client_custom: mk("client_custom", `${C}/extensions/client_custom/client_custom`, { loadable: false, problems: [{ code: "not-loaded", level: "info", text: `${C}/extensions/client_custom is not on this config's addons_path` }], ...(db ? { db_state: undefined } : {}) }),
+  };
+  return { modules, missing: {}, cycles: [], addons_paths: [], installation: "/opt/odoo19", series: "19.0", config: p.config, instance: "nutech", repos: [], database: db ?? null, db_error: null,
+    changed: { modules: { adm_core: modules.adm_core.change, adm_portal: modules.adm_portal.change, exam_results: modules.exam_results.change,
+      old_reports: ch("old_reports", `${C}/hr/payroll/old_reports`, { files: [{ path: "__manifest__.py", status: "D", kind: "manifest" }], kinds: ["manifest"], removed: true, action: "uninstall-first", why: "the module folder lost its manifest: uninstall it from databases before removing it, or restore it" }) }, errors: {}, heuristic: true } };
+};
+const testRuns: Json[] = [
+  { id: "t2", at: iso(40), installation: "/opt/odoo19", config: "/etc/odoo/odoo19/nutech.conf", modules: ["exam_core"], tags: null, demo: true, database: "odp_test_exam_core_20261009_101500", kept: true, exit_code: 0, status: "failed", tests: 24, failures: 1, errors: 0, failed: [{ kind: "fail", test: "odoo.addons.exam_core.tests.test_marks.TestMarks.test_rounding" }], note: null },
+  { id: "t1", at: iso(180), installation: "/opt/odoo19", config: "/etc/odoo/odoo19/nutech.conf", modules: ["adm_core"], tags: null, demo: true, database: "odp_test_adm_core_20261009_080000", kept: false, exit_code: 0, status: "passed", tests: 31, failures: 0, errors: 0, failed: [], note: null },
+];
+
 const plan = (checks: [string, string, string][], steps: [string, string, string[]][]) => ({
   checks: checks.map(([id, status, detail]) => ({ id, status, detail })),
   steps: steps.map(([id, title, commands], i) => ({ id, phase: i + 1, actor: i ? "agent" : "root", title, commands })),
@@ -348,6 +372,34 @@ export function createMock(deliver: Deliver) {
     "agents.list": () => agents,
     "sessions.list": () => [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at)),
     "discover.scan": () => snapshotOf(),
+    "modules.center": (p) => modCenter(p),
+    "modules.plan": (p) => {
+      const db = p.kind === "test" ? `odp_test_${p.modules[0]}_20261009_120000` : p.database;
+      const argv = ["/opt/odoo19/venv/bin/python", "/opt/odoo19/odoo/odoo-bin", "-c", p.config, "-d", db, p.kind === "upgrade" ? "-u" : "-i", p.modules.join(","), "--stop-after-init",
+        ...(p.kind === "test" ? ["--test-enable", "--test-tags", p.tags || p.modules.map((m: string) => `/${m}`).join(","), "--log-level=test", ...(p.demo ? ["--with-demo"] : [])] : [])];
+      const bad = p.modules.includes("client_custom");
+      const checks = p.modules.map((m: string) => ({ id: m, status: m === "client_custom" ? "fail" : "ok", detail: m === "client_custom" ? `${m} is in /opt/odoo19/custom/extensions/client_custom, which this config does not load` : `${m} found` }));
+      const steps = [...(p.kind !== "test" && p.snapshot ? [{ id: "snapshot", phase: 1, actor: "agent", title: `Snapshot ${db} (database and filestore)`, commands: [`odp db snapshot /opt/odoo19 ${db}`] }] : []),
+        { id: p.kind, phase: 2, actor: "odoo19", title: p.kind === "test" ? `Create ${db}, install ${p.modules.join(", ")} and run their tests` : `${p.kind === "install" ? "Install" : "Upgrade"} ${p.modules.join(", ")} in ${db}, then stop`, commands: [argv.join(" ")] },
+        ...(p.kind === "test" ? [{ id: "cleanup", phase: 3, actor: "agent", title: "Drop the test database if every test passed; keep it if not", commands: [`odp db drop /opt/odoo19 ${db} --confirm ${db}  (only when passed)`] }] : [])];
+      return { kind: p.kind, config: p.config, database: db, modules: p.modules, checks, steps, ok: !bad, argv, user: "odoo19", snapshot: p.snapshot, tags: p.tags, demo: p.demo };
+    },
+    "modules.run": (p) => {
+      const db = p.kind === "test" ? `odp_test_${p.modules[0]}_20261009_120000` : p.database;
+      const steps = p.kind === "test" ? ["test", "cleanup"] : p.snapshot ? ["snapshot", "upgrade"] : ["upgrade"];
+      const fail = p.kind === "test" && p.modules.includes("exam_core");
+      const extra = p.kind === "test" ? { status: fail ? "failed" : "passed", tests: 24, failures: fail ? 1 : 0, errors: 0, kept: fail, database: db, id: "t3",
+        failed: fail ? [{ kind: "fail", test: "odoo.addons.exam_core.tests.test_marks.TestMarks.test_rounding" }] : [] } : { exit_code: 0, backup: p.snapshot ? `/opt/odoo19/odp-backups/snapshots/${db}-20261009-1200` : null, problems: [] };
+      if (p.kind === "test") testRuns.unshift({ ...extra, at: new Date().toISOString(), installation: "/opt/odoo19", config: p.config, modules: p.modules, tags: p.tags, demo: p.demo, exit_code: 0, note: null });
+      return job("modules", steps, { kind: p.kind, database: db, modules: p.modules, config: p.config, ...extra });
+    },
+    "modules.tests": () => testRuns,
+    "modules.drop_test": (p) => { const r = testRuns.find((x) => x.id === p.id); if (r) r.kept = false; return job("db", ["drop"], {}); },
+    "modules.scaffold_plan": (p) => ({ target: `${p.folder}/${p.name}`, ok: true, checks: [{ id: "folder", status: "ok", detail: `${p.folder} is writable` }],
+      files: { "__init__.py": "from . import models\n", "__manifest__.py": `{\n    "name": "${p.name.replace(/_/g, " ")}",\n    "version": "19.0.1.0.0",\n    "license": "LGPL-3",\n    "depends": ${JSON.stringify(p.depends)},\n    "data": [\n        "security/ir.model.access.csv",\n        "views/views.xml",\n    ],\n}\n`, "models/__init__.py": "", "security/ir.model.access.csv": "id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\n", "views/views.xml": "<odoo>\n</odoo>\n" } }),
+    "modules.scaffold": (p) => ({ created: [], target: `${p.folder}/${p.name}` }),
+    "modules.open": () => ({ argv: ["/usr/bin/code"] }),
+
     "repo.list": (p) => ({ repos: p.installation ? repos.filter((r) => r.installations.some((i: Json) => i.root === p.installation)) : repos, scan_roots: [] }),
     "repo.show": (p) => repos.find((r) => r.path === p.path),
     "repo.diff": (p) => {

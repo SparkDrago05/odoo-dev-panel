@@ -18,7 +18,7 @@ import { SettingsView } from "./views/Settings";
 function CurrentView({ route }: { route: Route }) {
   switch (route.view) {
     case "home": return <HomeView />;
-    case "installation": return <InstallationView root={route.root} tab={route.tab} repo={route.repo} />;
+    case "installation": return <InstallationView root={route.root} tab={route.tab} repo={route.repo} module={route.module} />;
     case "instance": return <InstanceView path={route.path} />;
     case "databases": return <DatabasesView root={route.root} db={route.db} />;
     case "sessions": return <SessionsView selectedKey={route.key} />;
@@ -34,7 +34,7 @@ function CurrentView({ route }: { route: Route }) {
 function hasInspector(r: Route) {
   return (r.view === "instance") || (r.view === "databases" && !!r.db) || (r.view === "doctor" && !!r.finding)
     || (r.view === "docker" && !!r.name) || (r.view === "services" && !!r.name)
-    || (r.view === "repos" && !!r.path) || (r.view === "installation" && r.tab === "repos" && !!r.repo);
+    || (r.view === "repos" && !!r.path) || (r.view === "installation" && r.tab === "repos" && !!r.repo) || (r.view === "installation" && r.tab === "modules" && !!r.module);
 }
 
 function useShortcuts() {

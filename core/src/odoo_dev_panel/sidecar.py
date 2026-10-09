@@ -120,6 +120,14 @@ class Sidecar:
             "config.form": self.h_config_form,
             "config.save": self.h_config_save,
             "modules.graph": self.h_modules_graph,
+            "modules.center": self.h_modules_center,
+            "modules.plan": self.h_modules_plan,
+            "modules.run": self.h_modules_run,
+            "modules.tests": self.h_modules_tests,
+            "modules.drop_test": self.h_modules_drop_test,
+            "modules.scaffold_plan": self.h_modules_scaffold_plan,
+            "modules.scaffold": self.h_modules_scaffold,
+            "modules.open": self.h_modules_open,
             "compare.run": self.h_compare,
             "compare.databases": self.h_compare_databases,
             "compare.installations": self.h_compare_installations,
@@ -794,6 +802,112 @@ class Sidecar:
             except dbquery.QueryError as exc:
                 full["db_error"] = str(exc)
         return full
+
+    # -- M1-M9: module center ---------------------------------------------------
+
+    async def h_modules_center(self, params, _conn):
+        """Inventory of a config: modules with repository, manifest problems, uncommitted changes, database state."""
+        from .module_center import api
+
+        try:
+            return await api.load(params or {}, await self._snap(), with_changes=(params or {}).get("changes", True) is not False)
+        except api.ApiError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_modules_plan(self, params, _conn):
+        """Dry run of upgrade, install or test: checks, steps with the exact command."""
+        from .module_center import api
+
+        p = params or {}
+        try:
+            planned = await api.plan(p.get("kind"), p, await self._snap())
+        except api.ApiError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        return {k: v for k, v in planned.items() if k != "session"} | {"argv": planned["session"]["argv"], "user": planned["session"]["user"]}
+
+    async def h_modules_run(self, params, _conn):
+        """Run an upgrade, install or test in the background (job kind ``modules``): modules.step, modules.finished."""
+        from .module_center import api
+
+        p = params or {}
+        try:
+            planned = await api.plan(p.get("kind"), p, await self._snap())
+        except api.ApiError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        if not planned["ok"]:
+            raise rpc.RpcError(rpc.CONFLICT, "; ".join(c["detail"] for c in planned["checks"] if c["status"] == "fail"))
+        conn = await self.agent(planned["session"]["user"])
+
+        async def work(report) -> dict:
+            return await api.execute(planned, conn, report)
+
+        run_id = self._start_job("modules", work, {"kind": planned["kind"], "database": planned["database"],
+                                                   "modules": planned["modules"], "config": planned["config"]})
+        return {"run_id": run_id, "kind": planned["kind"], "database": planned["database"]}
+
+    async def h_modules_tests(self, params, _conn):
+        """Test run history, newest first; ``installation`` filters."""
+        from .module_center import actions
+
+        root = (params or {}).get("installation")
+        rows = await asyncio.to_thread(actions.history)
+        return [r for r in rows if not root or r.get("installation") == root]
+
+    async def h_modules_drop_test(self, params, _conn):
+        """Drop a test database kept after a failed run (job kind ``db``)."""
+        from .module_center import actions
+
+        test_id = (params or {}).get("id")
+        if not isinstance(test_id, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "id is required")
+
+        async def work(report) -> dict:
+            try:
+                return {"test": await actions.drop_kept(test_id, report)}
+            except actions.ActionError as exc:
+                raise RuntimeError(str(exc)) from exc
+
+        return {"run_id": self._start_job("db", work, {"kind": "drop-test"})}
+
+    async def h_modules_scaffold_plan(self, params, _conn):
+        from .module_center import actions
+
+        p = params or {}
+        try:
+            return await asyncio.to_thread(actions.scaffold_plan, await self._snap(), p.get("installation"), p.get("folder"),
+                                           p.get("name"), p.get("title"), p.get("depends"))
+        except actions.ActionError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_modules_scaffold(self, params, _conn):
+        """Create the module files of scaffold_plan (new files only; an existing folder is refused)."""
+        from .module_center import actions
+
+        p = params or {}
+        try:
+            planned = await asyncio.to_thread(actions.scaffold_plan, await self._snap(), p.get("installation"), p.get("folder"),
+                                              p.get("name"), p.get("title"), p.get("depends"))
+            return {"created": await asyncio.to_thread(actions.scaffold_create, planned), "target": planned["target"]}
+        except (actions.ActionError, OSError) as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_modules_open(self, params, _conn):
+        """Open a module folder of a config's inventory in the IDE, a terminal or the file manager."""
+        from .git import opener
+        from .module_center import api
+
+        p = params or {}
+        try:
+            graph = await api.load({"config": p.get("config")}, await self._snap(), with_changes=False)
+        except api.ApiError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        info = graph["modules"].get(p.get("module"))
+        if info is None:
+            raise rpc.RpcError(rpc.NOT_FOUND, f"no module {p.get('module')} for this config")
+        try:
+            return {"argv": opener.open_path(info["path"], p.get("target", "ide"))}
+        except opener.OpenError as exc:
+            raise rpc.RpcError(rpc.UNAVAILABLE, str(exc)) from exc
 
     async def h_docker_list(self, params, _conn):
         """Odoo containers, read-only (docker ps and inspect). Its own call: a slow daemon does not slow the scan."""

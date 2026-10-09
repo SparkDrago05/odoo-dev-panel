@@ -705,3 +705,6 @@ pre.diff .hunk { color: var(--info); }
   .repo-row input:first-child { grid-column: 1 / -1; }
   .wizard-steps li { font-size: var(--fs-xs); padding: 4px 6px; }
 }
+.search-box { display: inline-flex; align-items: center; gap: 6px; height: var(--ctl-h); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--input); color: var(--text-3); min-width: 200px; }
+.search-box svg { width: 13px; height: 13px; flex: none; }
+.search-box input { border: 0; background: transparent; outline: none; padding: 0; height: 100%; min-width: 0; flex: 1; color: var(--text); }

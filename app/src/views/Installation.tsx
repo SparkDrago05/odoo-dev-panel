@@ -1,8 +1,7 @@
 import {
   Boxes, Copy, FolderGit2, Database, ExternalLink, FileCog, FolderTree, GitCompare, HeartPulse, LayoutGrid, Pencil, Play, RefreshCw, ShieldCheck, Square, Stethoscope, TerminalSquare,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { ModulesPanel } from "../features/Modules";
+import { useModuleCenter } from "../features/ModuleCenter";
 import { RuntimeControls } from "../features/Run";
 import { rpc } from "../rpc";
 import { Inspector, InspectorSection } from "../shell/Chrome";
@@ -11,7 +10,7 @@ import { type InstallTab, sessionKey, useApp } from "../state/app";
 import type { Instance } from "../types";
 import { ActionMenu } from "../ui/Menu";
 import { Tabs } from "../ui/Tabs";
-import { ago, Badge, Callout, Dot, EmptyState, Field, KV, Stat } from "../ui/primitives";
+import { ago, Badge, Callout, Dot, EmptyState, KV, Stat } from "../ui/primitives";
 import { View, ViewHead, Panel } from "./common";
 import { EmbeddedDatabases } from "./Databases";
 import { useRepoWorkspace } from "./Repositories";
@@ -69,15 +68,15 @@ export function InstanceMenu({ inst }: { inst: Instance }) {
   );
 }
 
-export function InstallationView({ root, tab = "overview", repo }: { root: string; tab?: InstallTab; repo?: string }) {
+export function InstallationView({ root, tab = "overview", repo, module }: { root: string; tab?: InstallTab; repo?: string; module?: string }) {
   const app = useApp();
   const { snap, doctor } = app;
   const inst = snap?.installations.find((i) => i.root === root);
   const configs = snap?.instances.filter((i) => i.installation === root) ?? [];
-  const [modulesOf, setModulesOf] = useState(configs[0]?.path ?? "");
+  const modCenter = useModuleCenter({ root, selected: module, enabled: tab === "modules",
+    onSelect: (m) => app.nav({ view: "installation", root, tab: "modules", module: m }) });
   const repoWs = useRepoWorkspace({ root, selected: repo, enabled: tab === "repos",
     onSelect: (p) => app.nav({ view: "installation", root, tab: "repos", repo: p }) });
-  useEffect(() => { if (!configs.some((c) => c.path === modulesOf)) setModulesOf(configs[0]?.path ?? ""); }, [root, configs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!snap) return <View><EmptyState icon={<FolderTree />} title="Scanning…" /></View>;
   if (!inst) {
@@ -168,18 +167,7 @@ export function InstallationView({ root, tab = "overview", repo }: { root: strin
 
       {tab === "databases" && <EmbeddedDatabases root={root} />}
 
-      {tab === "modules" && (
-        configs.length === 0 ? <EmptyState icon={<Boxes />} title="No config">Modules are read through a config's addons_path.</EmptyState> : (
-          <>
-            <Field label="Through the addons_path of">
-              <select value={modulesOf} onChange={(e) => setModulesOf(e.target.value)} style={{ maxWidth: 420 }}>
-                {configs.map((c) => <option key={c.path} value={c.path}>{c.name} · {c.path}</option>)}
-              </select>
-            </Field>
-            {modulesOf && <ModulesPanel path={modulesOf} />}
-          </>
-        )
-      )}
+      {tab === "modules" && modCenter.body}
 
       {tab === "doctor" && (
         <Panel title="Diagnostics" actions={<button className="btn sm" onClick={app.runDoctor} disabled={doctor.running}><RefreshCw />{doctor.running ? "Checking…" : doctor.report ? "Check again" : "Run checks"}</button>} flush>
@@ -192,6 +180,7 @@ export function InstallationView({ root, tab = "overview", repo }: { root: strin
       )}
     </View>
     {tab === "repos" && repoWs.inspector}
+    {tab === "modules" && modCenter.inspector}
     </>
   );
 }

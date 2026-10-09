@@ -7,7 +7,7 @@ import type { Agent, AppInfo, Container, DbAction, DoctorReport, Session, Snapsh
 export type InstallTab = "overview" | "instances" | "repos" | "databases" | "modules" | "doctor";
 export type Route =
   | { view: "home" }
-  | { view: "installation"; root: string; tab?: InstallTab; repo?: string }
+  | { view: "installation"; root: string; tab?: InstallTab; repo?: string; module?: string }
   | { view: "instance"; path: string }
   | { view: "databases"; root?: string; db?: string }
   | { view: "sessions"; key?: string }
@@ -40,7 +40,9 @@ export type DialogSpec =
   | { kind: "repo-add"; installation: string }
   | { kind: "repo-diff"; path: string }
   | { kind: "profile-export"; root: string }
-  | { kind: "profile-apply"; installation: string };
+  | { kind: "profile-apply"; installation: string }
+  | { kind: "module-action"; action: "upgrade" | "install" | "test"; config: string; database?: string; modules: string[] }
+  | { kind: "module-scaffold"; installation: string };
 
 // ---------- Preferences ----------
 

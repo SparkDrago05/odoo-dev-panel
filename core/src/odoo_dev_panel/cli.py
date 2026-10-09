@@ -1018,6 +1018,191 @@ def cmd_modules(args) -> int:
     return 0
 
 
+MODULE_VERBS = ("graph", "changed", "check", "upgrade", "install", "test", "tests", "drop-test", "scaffold")
+
+
+def _module_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="odp modules", description="module development: odp modules VERB ... "
+                                "(odp modules CONFIG [MODULE] still shows the dependency graph)")
+    verbs = p.add_subparsers(dest="verb", required=True)
+    g = verbs.add_parser("graph", help="module dependencies of a config (same as odp modules CONFIG)")
+    g.add_argument("config")
+    g.add_argument("module", nargs="?")
+    g.add_argument("--depth", type=int)
+    g.add_argument("--json", action="store_true")
+    c = verbs.add_parser("changed", help="modules touched by uncommitted work, with guidance (heuristic)")
+    c.add_argument("config")
+    c.add_argument("--json", action="store_true")
+    c = verbs.add_parser("check", help="manifest checks of the config's own modules (or the named ones)")
+    c.add_argument("config")
+    c.add_argument("modules", nargs="*")
+    c.add_argument("--json", action="store_true")
+    for name, text in (("upgrade", "-u modules in a database, snapshot first, then stop"),
+                       ("install", "-i modules in a database, snapshot first, then stop")):
+        u = verbs.add_parser(name, help=text)
+        u.add_argument("config")
+        u.add_argument("modules", nargs="+")
+        u.add_argument("-d", "--database", required=True)
+        u.add_argument("--no-snapshot", action="store_true", help="skip the snapshot before the change")
+        u.add_argument("--plan", action="store_true")
+        u.add_argument("--yes", action="store_true")
+        u.add_argument("--json", action="store_true")
+    t = verbs.add_parser("test", help="run module tests in a new odp_test_* database (dropped if they pass)")
+    t.add_argument("config")
+    t.add_argument("modules", nargs="+")
+    t.add_argument("--tags", help="--test-tags value (default: /module for each module)")
+    t.add_argument("--no-demo", action="store_true", help="without demo data")
+    t.add_argument("--plan", action="store_true")
+    t.add_argument("--yes", action="store_true")
+    t.add_argument("--json", action="store_true")
+    h = verbs.add_parser("tests", help="test run history")
+    h.add_argument("--installation")
+    h.add_argument("--json", action="store_true")
+    d = verbs.add_parser("drop-test", help="drop the test database a failed run kept")
+    d.add_argument("id")
+    s = verbs.add_parser("scaffold", help="create a minimal module in FOLDER (inside the installation or its repositories)")
+    s.add_argument("installation")
+    s.add_argument("folder")
+    s.add_argument("name")
+    s.add_argument("--title")
+    s.add_argument("--depends", help="comma-separated (default: base)")
+    s.add_argument("--plan", action="store_true")
+    s.add_argument("--yes", action="store_true")
+    return p
+
+
+def _job_report(event: dict) -> None:
+    if event["status"] == "output":
+        print(f"    {event['text']}", flush=True)
+    elif event["status"] == "start":
+        print(f"== {event['step']}: {event['text']}", flush=True)
+    else:
+        print(f"== {event['step']}: {event['status']} {event['text']}".rstrip(), flush=True)
+
+
+def cmd_module_verb(argv: list[str]) -> int:
+    """odp modules VERB ... (M1-M9)."""
+    from .discover import scan
+    from .module_center import actions, api
+
+    args = _module_parser().parse_args(argv)
+    if args.verb == "graph":
+        ns = argparse.Namespace(config=args.config, module=args.module, depth=args.depth, json=args.json)
+        return cmd_modules(ns)
+    snap = scan.scan(with_databases=args.verb in ("upgrade", "install"))
+    try:
+        if args.verb in ("changed", "check"):
+            graph = asyncio.run(api.load({"config": os.path.abspath(args.config)}, snap, with_changes=args.verb == "changed"))
+            if args.verb == "changed":
+                data = graph["changed"]
+                if args.json:
+                    _print(data, True)
+                    return 0
+                for repo, err in data["errors"].items():
+                    print(f"{repo}: {err}", file=sys.stderr)
+                if not data["modules"]:
+                    print("No module has uncommitted changes.")
+                for name, e in sorted(data["modules"].items()):
+                    tag = "new" if e["new"] else "removed" if e["removed"] else ",".join(e["kinds"]) or "dependency"
+                    print(f"{name:32} {tag:24} {e['action']:16} {e['why']}")
+                print("(guidance from changed file kinds, not a verdict)")
+                return 0
+            wanted = args.modules or [n for n, i in graph["modules"].items() if i.get("own")]
+            rows = {n: graph["modules"][n]["problems"] for n in wanted if n in graph["modules"]}
+            missing = [n for n in wanted if n not in graph["modules"]]
+            if args.json:
+                _print({"problems": rows, "unknown": missing}, True)
+            else:
+                for n in missing:
+                    print(f"{n}: not on this config's addons_path")
+                for n, probs in sorted(rows.items()):
+                    for pr in probs:
+                        print(f"{n:32} {pr['level']:5} {pr['text']}")
+                bad = sum(1 for probs in rows.values() for pr in probs if pr["level"] == "error")
+                print(f"{len(rows)} module(s) checked, {bad} error(s)")
+            return 1 if missing or any(pr["level"] == "error" for probs in rows.values() for pr in probs) else 0
+        if args.verb == "tests":
+            rows = [r for r in actions.history() if not args.installation or r["installation"] == args.installation]
+            if args.json:
+                _print(rows, True)
+                return 0
+            for r in rows:
+                print(f"{r['at']}  {r['status']:8} {r['tests']:4} tests {r['failures']} failed {r['errors']} errors  "
+                      f"{','.join(r['modules'])}  {r['database'] + ' (kept)' if r['kept'] else ''}  id {r['id']}")
+            return 0
+        if args.verb == "drop-test":
+            asyncio.run(actions.drop_kept(args.id, _job_report))
+            print("dropped")
+            return 0
+        if args.verb == "scaffold":
+            deps = [d.strip() for d in args.depends.split(",")] if args.depends else None
+            planned = actions.scaffold_plan(snap, os.path.normpath(args.installation), os.path.abspath(args.folder),
+                                            args.name, args.title, deps)
+            print(f"Create {planned['target']}:")
+            for rel in planned["files"]:
+                print(f"  {rel}")
+            if args.plan:
+                return 0 if planned["ok"] else 1
+            if not args.yes and input("Create? [y/N] ").strip().lower() != "y":
+                return 1
+            for path in actions.scaffold_create(planned):
+                print(f"created {path}")
+            return 0
+        params = {"config": os.path.abspath(args.config), "modules": args.modules}
+        if args.verb == "test":
+            params.update(tags=args.tags, demo=not args.no_demo)
+        else:
+            params.update(database=args.database, snapshot=not args.no_snapshot)
+        planned = asyncio.run(api.plan(args.verb, params, snap))
+    except (api.ApiError, OSError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    shown = {k: v for k, v in planned.items() if k != "session"} | {"argv": planned["session"]["argv"]}
+    if args.json and args.plan:
+        _print(shown, True)
+        return 0 if planned["ok"] else 1
+    if not args.json:
+        for c in planned["checks"]:
+            print(f"  [{c['status']:4}] {c['detail']}")
+        for st in planned["steps"]:
+            print(f"  {st['phase']}. {st['title']}")
+            for line in st["commands"]:
+                print(f"     $ {line}")
+    if args.plan:
+        return 0 if planned["ok"] else 1
+    if not planned["ok"]:
+        print("odp: fix the failed checks first", file=sys.stderr)
+        return 1
+    if not args.yes and input("Run now? [y/N] ").strip().lower() != "y":
+        return 1
+
+    async def go():
+        conn = await client.connect(planned["session"]["user"])
+        try:
+            return await api.execute(planned, conn, (lambda e: None) if args.json else _job_report)
+        finally:
+            await conn.close()
+
+    try:
+        result = asyncio.run(go())
+    except (api.ApiError, rpc.RpcError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    if args.json:
+        _print(result, True)
+    elif planned["kind"] == "test":
+        print(f"{result['status']}: {result['tests']} tests, {result['failures']} failed, {result['errors']} errors"
+              + (f"; database {result['database']} kept (odp modules drop-test {result['id']})" if result["kept"] else ""))
+        for f in result["failed"]:
+            print(f"  {f['kind'].upper()} {f['test']}")
+    else:
+        print(f"exit code {result['exit_code']}" + (f", snapshot {result['backup']}" if result["backup"] else ""))
+    ok = result.get("status") == "passed" if planned["kind"] == "test" else result["exit_code"] == 0
+    return 0 if ok else 1
+
+
 def cmd_docker(args) -> int:
     from .discover import docker
 
@@ -1638,6 +1823,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import askpass
 
         return askpass.main(raw[1:])
+    if raw[:1] == ["modules"] and len(raw) > 1 and raw[1] in MODULE_VERBS:
+        return cmd_module_verb(raw[1:])
     args = build_parser().parse_args(raw)
 
     if args.command == "sidecar":

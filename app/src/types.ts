@@ -153,3 +153,31 @@ export type ProvisionPlan = {
 export type AddonsProposal = {
   path: string; current: string[]; add: string[]; after?: string[]; sha: string | null; writable?: boolean; error: string | null;
 };
+
+// ---------- Module center (M1-M9) ----------
+
+export type ModuleProblem = { code: string; level: "error" | "warn" | "info"; text: string };
+export type ModuleChange = {
+  name: string; path: string; repo: string | null; files: { path: string; status: string; kind: string }[]; kinds: string[];
+  new: boolean; removed: boolean; dependency_changed: string[]; action: string; why: string;
+};
+export type ModuleInfo = {
+  path: string; addons_path: string; depends: string[]; required_by: string[]; installable: boolean;
+  name?: string; version?: string; repo?: string | null; loadable: boolean; own: boolean; problems: ModuleProblem[];
+  db_state?: string | null; db_version?: string | null; version_differs?: boolean; change?: ModuleChange;
+};
+export type ModuleCenter = {
+  modules: Record<string, ModuleInfo>; missing: Record<string, string[]>; cycles: string[][]; addons_paths: string[];
+  installation: string | null; series: string | null; config: string; instance: string; repos: string[];
+  database: string | null; db_error: string | null;
+  changed: { modules: Record<string, ModuleChange>; errors: Record<string, string>; heuristic: boolean };
+};
+export type ModulePlan = {
+  kind: "upgrade" | "install" | "test"; config: string; database: string; modules: string[]; checks: Check[]; steps: Step[];
+  ok: boolean; argv: string[]; user: string; snapshot?: boolean; tags?: string | null; demo?: boolean;
+};
+export type ModuleTestRun = {
+  id: string; at: string; installation: string; config: string; modules: string[]; tags: string | null; demo: boolean;
+  database: string; kept: boolean; exit_code: number | null; status: string; tests: number; failures: number; errors: number;
+  failed: { kind: string; test: string }[]; note: string | null;
+};
