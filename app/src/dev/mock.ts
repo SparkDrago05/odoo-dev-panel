@@ -387,7 +387,144 @@ export function createMock(deliver: Deliver) {
       steps: runnable.map((i: Json, n: number) => ({ id: `${p.op}-${n + 1}`, phase: n + 1, actor: "dev", title: i.title, commands: i.commands })),
       counts: { run: runnable.length, skip: items.length - runnable.length }, register: null };
   };
+  // ---- K1-K3 task runner
+  const SAFE = `name = "Safe upgrade"\ndescription = "Snapshot the database and filestore, upgrade the modules, then run their tests in a throwaway database"\n\n[params.config]\nkind = "config"\ndescription = "Odoo config of the instance"\n\n[params.database]\nkind = "database"\ndescription = "Database to upgrade"\n\n[params.modules]\nkind = "modules"\ndescription = "Modules to upgrade"\n\n[[steps]]\nop = "db.snapshot"\ntitle = "Snapshot {database}"\nconfig = "{config}"\ndatabase = "{database}"\n\n[[steps]]\nop = "modules.upgrade"\ntitle = "Upgrade {modules} in {database}"\nconfig = "{config}"\ndatabase = "{database}"\nmodules = "{modules}"\nsnapshot = false\n\n[[steps]]\nop = "modules.test"\ntitle = "Test {modules}"\nconfig = "{config}"\nmodules = "{modules}"\n`;
+  const wfs: Record<string, Json> = {
+    "safe-upgrade": { source: "built-in", title: "Safe upgrade", description: "Snapshot the database and filestore, upgrade the modules, then run their tests in a throwaway database", text: SAFE,
+      params: { config: { kind: "config", description: "Odoo config of the instance" }, database: { kind: "database", description: "Database to upgrade" }, modules: { kind: "modules", description: "Modules to upgrade" } },
+      steps: [{ op: "db.snapshot", title: "Snapshot {database}", gate: false }, { op: "modules.upgrade", title: "Upgrade {modules} in {database}", gate: true }, { op: "modules.test", title: "Test {modules}", gate: false }] },
+    "pull-and-upgrade": { source: "built-in", title: "Pull and upgrade", description: "Pull the installation's repositories (fast-forward only), snapshot, upgrade the modules, start the instance", text: "name = \"Pull and upgrade\"\n# …\n",
+      params: { config: { kind: "config" }, database: { kind: "database" }, modules: { kind: "modules" } },
+      steps: [{ op: "instance.stop", title: "Stop an instance's sessions", gate: false }, { op: "git.pull", title: "Pull repositories (fast-forward only)", gate: false }, { op: "db.snapshot", title: "Snapshot a database", gate: false }, { op: "modules.upgrade", title: "Upgrade modules", gate: true }, { op: "instance.start", title: "Start an instance", gate: false }] },
+    "test-copy": { source: "built-in", title: "Neutralized test copy", description: "Clone a database with its filestore, neutralize the copy, start the instance on it", text: "name = \"Neutralized test copy\"\n# …\n",
+      params: { config: { kind: "config" }, database: { kind: "database", description: "Database to copy (it is only read)" }, target: { kind: "new_database", description: "Name of the copy" } },
+      steps: [{ op: "db.clone", title: "Clone a database", gate: false }, { op: "db.neutralize", title: "Neutralize a database", gate: false }, { op: "instance.start", title: "Start an instance", gate: false }] },
+    "nightly-check": { source: "saved", title: "Nightly check", description: "Fetch, validate the venv, run a lint command as me", text: "name = \"Nightly check\"\n\n[params.config]\nkind = \"config\"\n\n[[steps]]\nop = \"git.fetch\"\ninstallation = \"{installation}\"\n\n[[steps]]\nop = \"python.validate\"\nconfig = \"{config}\"\n\n[[steps]]\nop = \"command\"\nargv = [\"pre-commit\", \"run\", \"--all-files\"]\ncwd = \"/opt/odoo19/custom\"\n",
+      params: { config: { kind: "config" } },
+      steps: [{ op: "git.fetch", title: "Fetch repositories", gate: false }, { op: "python.validate", title: "Validate the Python environment", gate: false }, { op: "command", title: "Run a command", gate: true }] },
+  };
+  const taskRuns: Json[] = [
+    { run: "5be1c0de", workflow: "safe-upgrade", title: "Safe upgrade", at: iso(180), ended_at: iso(176), status: "fail", failed_at: 1, start: 0, retry_of: null, user: "dev",
+      params: { config: "/etc/odoo/odoo19/nutech.conf", database: "nutech_upgrade_test", modules: ["nims_hr", "nims_payroll"], installation: "/opt/odoo19" }, titles: [],
+      steps: [{ index: 0, op: "db.snapshot", title: "Snapshot nutech_upgrade_test", status: "ok", summary: "/opt/odoo19/odp-backups/snapshots/nutech_upgrade_test-20261009-0912", seconds: 41.2 },
+        { index: 1, op: "modules.upgrade", title: "Upgrade nims_hr,nims_payroll in nutech_upgrade_test", status: "fail", summary: "exit code 1", seconds: 63.9 }] },
+    { run: "1d9a77f2", workflow: "test-copy", title: "Neutralized test copy", at: iso(60 * 26), ended_at: iso(60 * 26 - 3), status: "ok", failed_at: null, start: 0, retry_of: null, user: "dev",
+      params: { config: "/etc/odoo/odoo17/acme.conf", database: "acme_prod", target: "acme_test_2026_10" }, titles: [],
+      steps: [{ index: 0, op: "db.clone", title: "Clone a database", status: "ok", summary: "acme_test_2026_10", seconds: 102.4 }, { index: 1, op: "db.neutralize", title: "Neutralize a database", status: "ok", summary: "neutralize", seconds: 3.1 },
+        { index: 2, op: "instance.start", title: "Start an instance", status: "ok", summary: "running on http://localhost:8069", seconds: 2.0 }] },
+  ];
+  const taskGates = new Map<string, (ok: boolean) => void>();
+  const fillT = (t: string, v: Json) => t.replace(/\{(\w+)\}/g, (_m, k) => (Array.isArray(v[k]) ? v[k].join(",") : v[k] ?? `{${k}}`));
+  const taskValues = (w: Json, given: Json) => {
+    const v: Json = {};
+    for (const [k, spec] of Object.entries<Json>(w.params)) {
+      const raw = given?.[k];
+      if (!raw || (Array.isArray(raw) && !raw.length)) throw new Error(`parameter ${k} is required`);
+      v[k] = spec.kind === "modules" ? String(raw).split(",").map((x) => x.trim()).filter(Boolean) : raw;
+    }
+    const cfg = Object.keys(w.params).find((k) => w.params[k].kind === "config");
+    if (cfg) v.installation = instances.find((i) => i.path === v[cfg])?.installation ?? "/opt/odoo19";
+    return v;
+  };
+  const taskStep = (w: Json, n: number, v: Json) => {
+    const st = w.steps[n];
+    const identity = st.op.startsWith("db.") ? `${v.installation?.split("/").pop()} (PostgreSQL role and filestore owner)` : st.op === "command" ? "dev (you, with your own permissions)"
+      : st.op.startsWith("git.") ? "dev (you)" : `${v.installation?.split("/").pop()} (run-as user, through its agent)`;
+    const commands = st.op === "db.snapshot" ? [`pg_dump -Fc -f /opt/odoo19/odp-backups/snapshots/${v.database}-20261009-1200/dump ${v.database}`]
+      : st.op === "modules.upgrade" ? [`/opt/odoo19/venv/bin/python /opt/odoo19/odoo/odoo-bin -c ${v.config} -d ${v.database} -u ${(v.modules ?? []).join(",")} --stop-after-init`]
+      : st.op === "modules.test" ? [`/opt/odoo19/venv/bin/python /opt/odoo19/odoo/odoo-bin -c ${v.config} -d odp_test_x -i ${(v.modules ?? []).join(",")} --test-enable --stop-after-init`]
+      : st.op === "command" ? ["pre-commit run --all-files"] : st.op === "git.pull" || st.op === "git.fetch" ? [`git -C /opt/odoo19/custom/nims ${st.op.slice(4)} --ff-only`] : [`odp ${st.op} …`];
+    const later = st.op === "db.neutralize" && !dbs[v.installation]?.some((d) => d.name === v.target);
+    const checks = later ? [{ id: "source", status: "fail", detail: `${v.target} is not a database of this installation's role` }] : st.op === "command" ? [{ id: "identity", status: "warn", detail: `runs as ${identity}, in /opt/odoo19/custom` }] : [{ id: "plan", status: "ok", detail: "checks pass" }];
+    return { index: n, op: st.op, title: fillT(st.title, v), gate: st.gate, ok: !later, checks, commands, identity };
+  };
+  let taskCurrent: { run: string; cancel: boolean } | null = null;
   const handlers: Record<string, (p: Json) => Json | Promise<Json>> = {
+    "tasks.list": () => Object.entries(wfs).map(([name, w]) => ({ name, source: w.source, path: w.source === "saved" ? `/home/dev/.config/odoo-dev-panel/workflows/${name}.toml` : null, title: w.title, description: w.description, steps: w.steps.length, params: Object.keys(w.params), error: null }))
+      .sort((a, b) => (a.source === b.source ? a.name.localeCompare(b.name) : a.source === "saved" ? -1 : 1)),
+    "tasks.read": (p) => {
+      const w = wfs[p.name];
+      if (!w) throw new Error(`no workflow ${p.name}`);
+      return { name: p.name, source: w.source, path: w.source === "saved" ? `/home/dev/.config/odoo-dev-panel/workflows/${p.name}.toml` : null, text: w.text, digest: "abc", title: w.title, description: w.description, params: w.params, derived: Object.values<Json>(w.params).some((x) => x.kind === "config") ? ["installation"] : [] };
+    },
+    "tasks.ops": () => ({ param_kinds: ["installation", "config", "database", "new_database", "modules", "text"], ops: [
+      { op: "git.pull", title: "Pull repositories (fast-forward only)", fields: { installation: "text", repos: "list" }, required: [], gate: false, always_gate: false },
+      { op: "db.snapshot", title: "Snapshot a database", fields: { installation: "text", config: "text", database: "text", keep: "int" }, required: ["database"], gate: false, always_gate: false },
+      { op: "modules.upgrade", title: "Upgrade modules", fields: { config: "text", database: "text", modules: "list", snapshot: "bool" }, required: ["config", "database", "modules"], gate: true, always_gate: false },
+      { op: "db.drop", title: "Drop a database", fields: { installation: "text", config: "text", database: "text" }, required: ["database"], gate: true, always_gate: true },
+      { op: "command", title: "Run a command", fields: { argv: "list", as: "text", cwd: "text", installation: "text", config: "text" }, required: ["argv"], gate: true, always_gate: true }] }),
+    "tasks.check": (p) => (/\[\[steps\]\]/.test(p.text) ? { ok: true, error: null } : { ok: false, error: "workflow: steps must be a non-empty array of tables ([[steps]])" }),
+    "tasks.save": (p) => {
+      if (wfs[p.name]?.source === "built-in") throw new Error(`${p.name} is a built-in recipe; save the copy under another name`);
+      if (wfs[p.name] && !p.overwrite) throw new Error(`workflow ${p.name} exists; choose another name or overwrite it`);
+      const title = /name = "([^"]*)"/.exec(p.text)?.[1] ?? p.name;
+      wfs[p.name] = { ...(wfs[p.name] ?? { params: {}, steps: [{ op: "db.snapshot", title: "Snapshot a database", gate: false }] }), source: "saved", title, description: /description = "([^"]*)"/.exec(p.text)?.[1] ?? null, text: p.text };
+      return { path: `/home/dev/.config/odoo-dev-panel/workflows/${p.name}.toml` };
+    },
+    "tasks.delete": (p) => { delete wfs[p.name]; return { moved_to: `/home/dev/.config/odoo-dev-panel/workflows/.trash-${p.name}-20261009-120000.toml` }; },
+    "tasks.preview": (p) => {
+      const prev = p.retry_of ? taskRuns.find((r) => r.run === p.retry_of) : null;
+      const name = prev ? prev.workflow : p.name;
+      const w = wfs[name];
+      const v = prev ? prev.params : taskValues(w, p.params);
+      const start = prev ? prev.failed_at ?? 0 : 0;
+      const steps = w.steps.map((_s: Json, n: number) => (n < start ? { ...taskStep(w, n, v), gate: false, checks: [], commands: [], skipped: "done in the earlier run" } : taskStep(w, n, v)));
+      return { name, title: w.title, description: w.description, source: w.source, digest: "abc", params: v, start, steps, gates: steps.filter((s: Json) => s.gate && !s.skipped).length };
+    },
+    "tasks.run": async (p) => {
+      const prev = p.retry_of ? taskRuns.find((r) => r.run === p.retry_of) : null;
+      const name = prev ? prev.workflow : p.name;
+      const w = wfs[name];
+      const v = prev ? prev.params : taskValues(w, p.params);
+      const start = prev ? prev.failed_at ?? 0 : 0;
+      const run_id = `t${++runCounter}`;
+      const row: Json = { run: run_id, workflow: name, title: w.title, at: new Date().toISOString(), ended_at: null, status: "running", failed_at: null, start, params: v, retry_of: p.retry_of ?? null, titles: [], steps: [], user: "dev" };
+      taskRuns.unshift(row);
+      taskCurrent = { run: run_id, cancel: false };
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      (async () => {
+        await sleep(200);
+        let status = "ok", failed: number | null = null;
+        for (let n = start; n < w.steps.length; n++) {
+          if (taskCurrent?.cancel) { status = "cancelled"; failed = n; break; }
+          const planned = taskStep(w, n, v);
+          emit("tasks.step", { run_id, task_step: n, step: "task", status: "start", text: planned.title });
+          await sleep(300);
+          let st = "ok", summary = "";
+          if (planned.gate) {
+            emit("tasks.step", { run_id, task_step: n, step: "task", status: "gate", text: planned.title, plan: { identity: planned.identity, commands: planned.commands, checks: planned.checks, ok: true } });
+            const ok = await new Promise<boolean>((r) => taskGates.set(`${run_id}/${n}`, r));
+            if (!ok) { st = "declined"; summary = "not confirmed"; }
+          }
+          if (st === "ok") {
+            for (const line of [`${planned.commands[0]}`, "… working", "… done"]) { emit("tasks.step", { run_id, task_step: n, step: planned.op.split(".").pop(), status: "output", text: line }); await sleep(250); }
+            const fail = planned.op === "modules.test" && (v.modules ?? []).includes("broken");
+            st = fail ? "fail" : "ok";
+            summary = fail ? "failed: 12 tests, 2 failed, 0 errors; odp_test_broken kept" : planned.op === "db.snapshot" ? `/opt/odoo19/odp-backups/snapshots/${v.database}-20261009-1200` : planned.op.startsWith("modules.") ? (planned.op === "modules.test" ? "passed: 48 tests, 0 failed, 0 errors" : "exit code 0") : "done";
+          }
+          emit("tasks.step", { run_id, task_step: n, step: "task", status: st, text: summary });
+          row.steps.push({ index: n, op: planned.op, title: planned.title, status: st, summary, seconds: 1.1 });
+          if (st !== "ok") { status = st; failed = n; break; }
+        }
+        Object.assign(row, { status, failed_at: failed, ended_at: new Date().toISOString() });
+        emit("tasks.finished", { run_id, ok: true, error: null, workflow: name, status, failed_at: failed, steps: row.steps, retry: failed != null });
+      })();
+      return { run_id, workflow: name, start };
+    },
+    "tasks.confirm": (p) => {
+      const key = `${p.run_id}/${p.step}`;
+      const r = taskGates.get(key);
+      if (!r) throw new Error("no step is waiting for that confirmation");
+      taskGates.delete(key); r(p.approve === true);
+      return { approved: p.approve === true };
+    },
+    "tasks.cancel": (p) => {
+      if (taskCurrent?.run !== p.run_id) throw new Error("no such task run");
+      taskCurrent!.cancel = true;
+      for (const [k, r] of taskGates) if (k.startsWith(`${p.run_id}/`)) { taskGates.delete(k); r(false); }
+      return { cancelling: true };
+    },
+    "tasks.history": (p) => taskRuns.filter((r) => !p?.workflow || r.workflow === p.workflow),
     "app.info": () => ({ version: "0.6.0-dev", user: "dev", socket_dir: "/run/odoo-dev-panel", pid: 1, group: { group: "odoo-dev", exists: true, member: true, active: true } }),
     "agents.list": () => agents,
     "sessions.list": () => [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at)),

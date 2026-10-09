@@ -15,6 +15,7 @@ export type Route =
   | { view: "docker"; name?: string }
   | { view: "services"; name?: string }
   | { view: "repos"; path?: string }
+  | { view: "tasks"; name?: string }
   | { view: "settings" };
 
 export const sessionKey = (s: { user: string; id: string }) => `${s.user}/${s.id}`;
@@ -43,7 +44,9 @@ export type DialogSpec =
   | { kind: "profile-apply"; installation: string }
   | { kind: "module-action"; action: "upgrade" | "install" | "test"; config: string; database?: string; modules: string[] }
   | { kind: "module-scaffold"; installation: string }
-  | { kind: "python-action"; root: string; params: Record<string, unknown> };
+  | { kind: "python-action"; root: string; params: Record<string, unknown> }
+  | { kind: "task-run"; name: string; params?: Record<string, unknown>; retryOf?: string }
+  | { kind: "task-edit"; name?: string; copyOf?: string };
 
 // ---------- Preferences ----------
 

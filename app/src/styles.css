@@ -708,3 +708,17 @@ pre.diff .hunk { color: var(--info); }
 .search-box { display: inline-flex; align-items: center; gap: 6px; height: var(--ctl-h); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--input); color: var(--text-3); min-width: 200px; }
 .search-box svg { width: 13px; height: 13px; flex: none; }
 .search-box input { border: 0; background: transparent; outline: none; padding: 0; height: 100%; min-width: 0; flex: 1; color: var(--text); }
+
+/* K1-K3 task runner */
+.ok-text { color: var(--success); }
+.warn-text { color: var(--warning); }
+.task-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.task-step { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2); min-width: 0; }
+.task-step.running, .task-step.gate { border-color: var(--accent); }
+.task-step.fail { border-color: var(--danger); }
+.task-step.skipped, .task-step.pending { opacity: 0.85; }
+.task-step-icon { width: 18px; height: 18px; display: grid; place-items: center; flex: none; margin-top: 1px; }
+.task-step-icon svg { width: 15px; height: 15px; }
+.task-step-icon .dim { color: var(--text-3); }
+.tasks-layout { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 12px; align-items: start; }
+@media (max-width: 900px) { .tasks-layout { grid-template-columns: 1fr; } }

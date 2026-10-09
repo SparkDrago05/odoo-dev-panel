@@ -14,6 +14,7 @@ import { RepositoriesView } from "./views/Repositories";
 import { ServicesView } from "./views/Services";
 import { SessionsView } from "./views/Sessions";
 import { SettingsView } from "./views/Settings";
+import { TasksView } from "./views/Tasks";
 
 function CurrentView({ route }: { route: Route }) {
   switch (route.view) {
@@ -26,6 +27,7 @@ function CurrentView({ route }: { route: Route }) {
     case "docker": return <DockerView name={route.name} />;
     case "services": return <ServicesView name={route.name} />;
     case "repos": return <RepositoriesView path={route.path} />;
+    case "tasks": return <TasksView name={route.name} />;
     case "settings": return <SettingsView />;
   }
 }
@@ -52,7 +54,7 @@ function useShortcuts() {
         if (window.innerWidth < 1120) { if (app.drawer) app.setDrawer(false); else app.inspect(); } else app.setPrefs({ inspector: !app.prefs.inspector });
       }
       else if (mod && !e.shiftKey && e.key.toLowerCase() === "j") { e.preventDefault(); app.setPrefs({ dock: !app.prefs.dock }); }
-      else if (mod && !e.shiftKey && /^[1-7]$/.test(e.key)) { e.preventDefault(); app.nav({ view: NAV[Number(e.key) - 1].view } as Route); }
+      else if (mod && !e.shiftKey && /^[1-8]$/.test(e.key)) { e.preventDefault(); app.nav({ view: NAV[Number(e.key) - 1].view } as Route); }
       else if (e.altKey && e.key === "ArrowLeft" && !typing) { e.preventDefault(); app.back(); }
     };
     window.addEventListener("keydown", onKey);

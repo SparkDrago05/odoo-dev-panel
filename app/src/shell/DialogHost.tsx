@@ -11,6 +11,7 @@ import { RepairVenvDialog } from "../features/RepairVenv";
 import { ApplyProfileDialog, ExportProfileDialog } from "../features/Profiles";
 import { RepoAddDialog, RepoDiffDialog, RepoOpDialog } from "../features/RepoDialogs";
 import { RunDialog } from "../features/Run";
+import { TaskRunDialog, WorkflowEditorDialog } from "../features/Tasks";
 import { useApp } from "../state/app";
 
 /** Dialogs any view or the command palette can open, plus the sudo password and confirmation prompts. */
@@ -44,6 +45,8 @@ export function DialogHost() {
       {d?.kind === "module-scaffold" && <ScaffoldDialog installation={d.installation} onClose={(changed) => done(changed, "modules")} />}
       {d?.kind === "profile-export" && <ExportProfileDialog root={d.root} onClose={close} />}
       {d?.kind === "profile-apply" && <ApplyProfileDialog installation={d.installation} onClose={(changed) => done(changed, "repos")} />}
+      {d?.kind === "task-run" && <TaskRunDialog name={d.name} given={d.params} retryOf={d.retryOf} onClose={(ran) => { done(ran, "tasks"); if (ran) app.scan(); }} />}
+      {d?.kind === "task-edit" && <WorkflowEditorDialog name={d.name} copyOf={d.copyOf} onClose={(saved) => done(saved, "tasks")} />}
       {d?.kind === "docker-delete" && <DeleteStackDialog container={d.container} onClose={(changed) => done(changed, "docker", "db")} />}
 
       {app.confirmReq && <ConfirmDialog request={app.confirmReq} onDone={(ok) => { app.confirmReq!.resolve(ok); app.setConfirmReq(null); }} />}

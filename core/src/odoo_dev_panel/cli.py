@@ -1596,6 +1596,180 @@ def cmd_db(args) -> int:
     return 0
 
 
+def _task_values(pairs: list[str]) -> dict:
+    out = {}
+    for pair in pairs or []:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            raise ValueError(f"parameters are NAME=VALUE, not {pair!r}")
+        out[key.strip()] = value
+    return out
+
+
+def _print_task_step(row: dict) -> None:
+    gate = "  [waits for your confirmation]" if row.get("gate") else ""
+    print(f"{row['index'] + 1}. {row['title']}  ({row['op']}){gate}")
+    if row.get("skipped"):
+        print(f"     skipped: {row['skipped']}")
+        return
+    if row.get("identity"):
+        print(f"     as {row['identity']}")
+    for c in row["checks"]:
+        print(f"     [{c['status']:4}] {c['detail']}")
+    for line in row["commands"]:
+        print(f"     $ {line}")
+
+
+def _task_report(event: dict) -> None:
+    n = event.get("task_step", 0) + 1
+    if event["step"] == "task":
+        if event["status"] == "start":
+            print(f"\n== step {n}: {event['text']}", flush=True)
+        elif event["status"] != "gate":
+            print(f"== step {n}: {event['status']}" + (f" {event['text']}" if event["text"] else ""), flush=True)
+        return
+    if event["status"] == "output":
+        print(f"    {event['text']}", flush=True)
+    elif event["status"] in ("ok", "fail"):
+        print(f"   {event['step']}: {event['status']} {event.get('text') or ''}".rstrip(), flush=True)
+
+
+def cmd_tasks(args) -> int:
+    """K1-K3: workflows of typed operations."""
+    from .tasks import runner, steps, workflow
+
+    sub = args.tasks_command
+    try:
+        if sub == "list":
+            rows = workflow.list_workflows()
+            if args.json:
+                _print({"workflows": rows, "folder": str(workflow.workflows_dir())}, True)
+                return 0
+            for r in rows:
+                print(f"{r['name']:24} {r['source']:9} {r['steps']:2} step(s)  {r['title'] or ''}"
+                      + (f"  ! {r['error']}" if r["error"] else ""))
+            print(f"(saved workflows: {workflow.workflows_dir()})")
+            return 0
+        if sub == "ops":
+            rows = steps.catalog()
+            if args.json:
+                _print(rows, True)
+                return 0
+            for r in rows:
+                gate = "always confirmed" if r["always_gate"] else "confirmed unless auto" if r["gate"] else ""
+                print(f"{r['op']:18} {r['title']:42} {gate}")
+                print(f"{'':18} fields: {', '.join(f + ('*' if f in r['required'] else '') for f in r['fields'])}")
+            return 0
+        if sub == "show":
+            wf = workflow.load(args.name)
+            if args.json:
+                _print({k: v for k, v in wf.items()}, True)
+            else:
+                print(f"# {wf['source']} {wf['path'] or ''}".rstrip())
+                print(wf["text"], end="")
+            return 0
+        if sub == "import":
+            text = _read_text(os.path.abspath(args.file))
+            name = args.name or os.path.splitext(os.path.basename(args.file))[0]
+            print(f"saved {workflow.save(name, text, args.overwrite)}")
+            return 0
+        if sub == "delete":
+            moved = workflow.delete(args.name)
+            print(f"moved to {moved}" if moved else f"no saved workflow {args.name}")
+            return 0 if moved else 1
+        if sub == "history":
+            rows = runner.history(None, args.name)[:args.limit]
+            if args.json:
+                _print(rows, True)
+                return 0
+            for r in rows:
+                status = "interrupted" if r["status"] == "running" else r["status"]
+                where = f" at step {r['failed_at'] + 1}" if r["failed_at"] is not None else ""
+                print(f"{r['at']}  {r['run']}  {r['workflow']:20} {status}{where}"
+                      + (f"  (retry of {r['retry_of']})" if r.get("retry_of") else ""))
+                for st in r["steps"]:
+                    print(f"     {st['index'] + 1}. {st['status']:8} {st['title']}  {st.get('summary') or ''}".rstrip())
+            return 0
+        if sub == "retry":
+            point = runner.retry_point(args.run_id)
+            name, given, start, retry_of = point["workflow"], point["params"], point["start"], args.run_id
+        else:
+            name, given, start, retry_of = args.name, _task_values(args.param), 0, None
+    except LookupError as exc:
+        print(f"odp: {str(exc).strip(chr(39))}", file=sys.stderr)
+        return 2
+    except (workflow.WorkflowError, runner.RunError, ValueError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+
+    conns: dict = {}
+
+    async def agent(user: str):
+        if user not in conns:
+            conns[user] = await client.connect(user)
+        return conns[user]
+
+    async def confirm(step: int, plan: dict) -> bool:
+        if args.yes:
+            return True
+        print(f"\nStep {step + 1} changes data or runs a command, as {plan['identity']}:")
+        for line in plan["commands"]:
+            print(f"     $ {line}")
+        try:
+            return input(f"Run step {step + 1}? [y/N] ").strip().lower() == "y"
+        except EOFError:
+            return False
+
+    async def go() -> int:
+        env = runner.LocalEnv(agent)
+        try:
+            shown = await runner.preview(name, given, env, start)
+            if args.json and (args.plan or not args.yes):
+                _print(shown, True)
+                return 0 if all(r["ok"] for r in shown["steps"]) else 1
+            if not args.json:
+                print(f"{shown['title']} ({shown['source']}), {len(shown['steps'])} step(s)"
+                      + (f", from step {start + 1} (retry of {retry_of})" if retry_of else ""))
+                for key, value in shown["params"].items():
+                    print(f"  {key} = {','.join(value) if isinstance(value, list) else value}")
+                print()
+                for row in shown["steps"]:
+                    _print_task_step(row)
+            if args.plan:
+                return 0 if all(r["ok"] for r in shown["steps"][start:]) else 1
+            if not args.json:
+                print("\nLater steps are planned again just before they run; a failed check stops the run there.")
+            if not args.yes:
+                try:
+                    if input("Run now? [y/N] ").strip().lower() != "y":
+                        return 1
+                except EOFError:
+                    return 1
+            result = await runner.run(name, given, env, (lambda e: None) if args.json else _task_report, confirm,
+                                      start, retry_of)
+        finally:
+            for conn in conns.values():
+                await conn.close()
+        if args.json:
+            _print(result, True)
+        else:
+            print(f"\n{result['status']}: run {result['run_id']}"
+                  + (f", stopped at step {result['failed_at'] + 1}; retry with: odp tasks retry {result['run_id']}"
+                     if result["failed_at"] is not None else ""))
+        return 0 if result["status"] == "ok" else 1
+
+    try:
+        return asyncio.run(go())
+    except LookupError as exc:
+        print(f"odp: {str(exc).strip(chr(39))}", file=sys.stderr)
+        return 2
+    except (workflow.WorkflowError, runner.RunError, rpc.RpcError) as exc:
+        print(f"odp: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="odp", description="Odoo Dev Panel")
     parser.add_argument("--version", action="version", version=f"odp {__version__}")
@@ -1777,6 +1951,40 @@ def build_parser() -> argparse.ArgumentParser:
     p = prof.add_parser("org", help="show or set the org overlay file")
     p.add_argument("path", nargs="?")
     p.add_argument("--default", action="store_true", help="back to ~/.config/odoo-dev-panel/org.toml")
+
+    tk = sub.add_parser("tasks", help="workflows of typed operations: list, show, ops, preview, run, retry, history").add_subparsers(
+        dest="tasks_command", required=True)
+    t = tk.add_parser("list", help="saved workflows and built-in recipes")
+    t.add_argument("--json", action="store_true")
+    t = tk.add_parser("ops", help="step types and their fields (* required)")
+    t.add_argument("--json", action="store_true")
+    t = tk.add_parser("show", help="print a workflow file")
+    t.add_argument("name")
+    t.add_argument("--json", action="store_true")
+    t = tk.add_parser("import", help="check a workflow file and copy it into the workflows folder")
+    t.add_argument("file")
+    t.add_argument("--name")
+    t.add_argument("--overwrite", action="store_true")
+    t = tk.add_parser("delete", help="move a saved workflow aside (.trash-NAME-TIME.toml)")
+    t.add_argument("name")
+    t = tk.add_parser("history", help="runs, newest first")
+    t.add_argument("name", nargs="?")
+    t.add_argument("--limit", type=int, default=20)
+    t.add_argument("--json", action="store_true")
+    for verb, text in (("preview", "plan every step now and print checks, commands and who runs them"),
+                       ("run", "preview, then run step by step; data-changing steps ask first")):
+        t = tk.add_parser(verb, help=text)
+        t.add_argument("name")
+        t.add_argument("-p", "--param", action="append", default=[], metavar="NAME=VALUE",
+                       help="parameter value (modules: a,b,c)")
+        t.add_argument("--yes", action="store_true", help="run without asking, gated steps included")
+        t.add_argument("--json", action="store_true")
+        t.set_defaults(plan=verb == "preview")
+    t = tk.add_parser("retry", help="run a failed or interrupted run again from its failed step, same parameters")
+    t.add_argument("run_id")
+    t.add_argument("--yes", action="store_true")
+    t.add_argument("--json", action="store_true")
+    t.set_defaults(plan=False)
 
     adopt = sub.add_parser("adopt", help="remember a discovered installation in the registry; changes no Odoo files")
     adopt.add_argument("root")
@@ -1990,6 +2198,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_python(args)
     if args.command == "profile":
         return cmd_profile(args)
+    if args.command == "tasks":
+        return cmd_tasks(args)
     if args.command == "repo":
         if args.repo_command in ("add", "fetch", "pull") and getattr(args, "paths", True) == [] and not args.bulk:
             print("odp: give repository paths or --bulk", file=sys.stderr)

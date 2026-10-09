@@ -1,6 +1,6 @@
 import {
   Activity, Boxes, ChevronRight, Container, Copy, Database, FileCog, FolderTree, GitCompare, HeartPulse, Home, PanelLeftClose,
-  FolderGit2, PanelLeftOpen, Pencil, Play, Plus, RefreshCw, Server, Settings, Square, Stethoscope,
+  FolderGit2, ListChecks, PanelLeftOpen, Pencil, Play, Plus, RefreshCw, Server, Settings, Square, Stethoscope,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useMemo, useRef, useState } from "react";
@@ -17,6 +17,7 @@ export const NAV: { view: Route["view"]; label: string; icon: ReactNode; key: st
   { view: "docker", label: "Docker", icon: <Container />, key: "5" },
   { view: "services", label: "Services", icon: <Server />, key: "6" },
   { view: "repos", label: "Repositories", icon: <FolderGit2 />, key: "7" },
+  { view: "tasks", label: "Tasks", icon: <ListChecks />, key: "8" },
 ];
 
 export const installLabel = (i: Installation) => (i.adopted ? i.name : i.root.split("/").filter(Boolean).pop() ?? i.root);

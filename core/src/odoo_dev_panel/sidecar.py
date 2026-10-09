@@ -34,6 +34,8 @@ class Sidecar:
         self._jobs: dict[str, asyncio.Task] = {}  # one provision and one repair at a time
         self._owners: tuple[float, set[str]] | None = None
         self._git_run: tuple[str, list[bool]] | None = None  # running repo job and its cancel flag
+        self._task_run: tuple[str, object] | None = None  # running workflow and its env (cancel flag)
+        self._task_gates: dict[tuple[str, int], asyncio.Future] = {}  # (run_id, step) -> waiting confirmation
 
     # -- agent connections ------------------------------------------------
 
@@ -177,6 +179,17 @@ class Sidecar:
             "profile.import": self.h_profile_import,
             "profile.export": self.h_profile_export,
             "profile.org": self.h_profile_org,
+            "tasks.list": self.h_tasks_list,
+            "tasks.ops": self.h_tasks_ops,
+            "tasks.read": self.h_tasks_read,
+            "tasks.check": self.h_tasks_check,
+            "tasks.save": self.h_tasks_save,
+            "tasks.delete": self.h_tasks_delete,
+            "tasks.preview": self.h_tasks_preview,
+            "tasks.run": self.h_tasks_run,
+            "tasks.confirm": self.h_tasks_confirm,
+            "tasks.cancel": self.h_tasks_cancel,
+            "tasks.history": self.h_tasks_history,
             "group.join": self.h_group_join,
             "debug.print": self.h_debug_print,
         }
@@ -378,10 +391,12 @@ class Sidecar:
     def _start_job(self, kind: str, work, finished: dict) -> str:
         """Run ``work(report)`` in the background. Progress goes out as ``<kind>.step``, the end as ``<kind>.finished``
         with ``finished`` plus ok/error and what ``work`` returned."""
+        return self._start_job_with_id(kind, work, finished, os.urandom(4).hex())
+
+    def _start_job_with_id(self, kind: str, work, finished: dict, run_id: str) -> str:
         task = self._jobs.get(kind)
         if task and not task.done():
             raise rpc.RpcError(rpc.CONFLICT, f"a {kind} is already running")
-        run_id = os.urandom(4).hex()
         ui = self.ui
         # One queue and one sender keep the events in order and put <kind>.finished after the last step.
         queue: asyncio.Queue = asyncio.Queue()
@@ -905,6 +920,158 @@ class Sidecar:
         run_id = self._start_job("python", work, {"kind": p["kind"], "root": (params or {}).get("root"),
                                                   "tool": p.get("tool")})
         return {"run_id": run_id, "kind": p["kind"]}
+
+    # -- K1-K3: task runner ---------------------------------------------------------
+
+    @staticmethod
+    def _task_call(func, *args):
+        from .tasks import runner, workflow
+
+        try:
+            return func(*args)
+        except LookupError as exc:
+            raise rpc.RpcError(rpc.NOT_FOUND, str(exc).strip("'\"")) from exc
+        except (workflow.WorkflowError, runner.RunError) as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_tasks_list(self, params, _conn):
+        """Saved workflows and built-in recipes, with a parse error per file instead of failing the list."""
+        from .tasks import workflow
+
+        return await asyncio.to_thread(workflow.list_workflows)
+
+    async def h_tasks_ops(self, params, _conn):
+        from .tasks import steps, workflow
+
+        return {"ops": steps.catalog(), "param_kinds": list(workflow.PARAM_KINDS)}
+
+    async def h_tasks_read(self, params, _conn):
+        from .tasks import workflow
+
+        wf = self._task_call(workflow.load, (params or {}).get("name"))
+        return {k: wf[k] for k in ("name", "source", "path", "text", "digest")} | {
+            "title": wf["data"].get("name"), "description": wf["data"].get("description"),
+            "params": wf["data"].get("params", {}), "derived": sorted(workflow.known_names(wf["data"]) - set(wf["data"].get("params", {})))}
+
+    async def h_tasks_check(self, params, _conn):
+        """Check workflow text without saving it: {ok, error}."""
+        from .tasks import workflow
+
+        text = (params or {}).get("text")
+        if not isinstance(text, str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "text is required")
+        try:
+            workflow.parse(text, "workflow")
+            return {"ok": True, "error": None}
+        except workflow.WorkflowError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    async def h_tasks_save(self, params, _conn):
+        from .tasks import workflow
+
+        p = params or {}
+        return {"path": self._task_call(workflow.save, p.get("name"), p.get("text"), bool(p.get("overwrite")))}
+
+    async def h_tasks_delete(self, params, _conn):
+        """Move a saved workflow aside (.trash-NAME-TIME.toml). Built-in recipes cannot be deleted."""
+        from .tasks import workflow
+
+        return {"moved_to": self._task_call(workflow.delete, (params or {}).get("name"))}
+
+    def _task_env(self):
+        from .tasks import runner
+
+        return runner.LocalEnv(self.agent)
+
+    async def _task_target(self, params) -> tuple[str, dict, int, str | None]:
+        """(workflow, params, start step, retry_of) from {name, params} or {retry_of}."""
+        from .tasks import runner
+
+        p = params or {}
+        if p.get("retry_of"):
+            active = {self._task_run[0]} if self._task_run and not self._jobs["tasks"].done() else set()
+            point = self._task_call(runner.retry_point, p["retry_of"], None, active)
+            return point["workflow"], point["params"], point["start"], p["retry_of"]
+        if not isinstance(p.get("name"), str):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "name or retry_of is required")
+        return p["name"], p.get("params") or {}, 0, None
+
+    async def h_tasks_preview(self, params, _conn):
+        """Every step planned now: checks, exact commands, who runs it, and whether it waits for a confirmation."""
+        from .tasks import runner
+
+        name, given, start, _retry = await self._task_target(params)
+        try:
+            return await runner.preview(name, given, self._task_env(), start)
+        except LookupError as exc:
+            raise rpc.RpcError(rpc.NOT_FOUND, str(exc).strip("'\"")) from exc
+        except (runner.workflow.WorkflowError, runner.RunError) as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+
+    async def h_tasks_run(self, params, _conn):
+        """Run a workflow (job kind ``tasks``): tasks.step events carry ``task_step``; a gated step sends status
+        ``gate`` and waits for tasks.confirm; the end is tasks.finished with the run result."""
+        from .tasks import runner
+
+        name, given, start, retry_of = await self._task_target(params)
+        env = self._task_env()
+        try:
+            await runner.preview(name, given, env, start)  # refuses bad parameters before a job starts
+        except LookupError as exc:
+            raise rpc.RpcError(rpc.NOT_FOUND, str(exc).strip("'\"")) from exc
+        except (runner.workflow.WorkflowError, runner.RunError) as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        holder: dict = {}
+
+        async def confirm(step: int, _plan: dict) -> bool:
+            fut = asyncio.get_running_loop().create_future()
+            key = (holder["run_id"], step)
+            self._task_gates[key] = fut
+            try:
+                return await asyncio.wait_for(fut, 3600)
+            except asyncio.TimeoutError:
+                return False
+            finally:
+                self._task_gates.pop(key, None)
+
+        async def work(report) -> dict:
+            return await runner.run(name, given, env, report, confirm, start, retry_of, holder["run_id"])
+
+        holder["run_id"] = run_id = os.urandom(4).hex()
+        self._start_job_with_id("tasks", work, {"workflow": name, "retry_of": retry_of}, run_id)
+        self._task_run = (run_id, env)
+        return {"run_id": run_id, "workflow": name, "start": start}
+
+    async def h_tasks_confirm(self, params, _conn):
+        """Answer a gate: approve true runs the step, false stops the run there."""
+        p = params or {}
+        fut = self._task_gates.get((p.get("run_id"), p.get("step")))
+        if fut is None or fut.done():
+            raise rpc.RpcError(rpc.NOT_FOUND, "no step is waiting for that confirmation")
+        fut.set_result(p.get("approve") is True)
+        return {"approved": p.get("approve") is True}
+
+    async def h_tasks_cancel(self, params, _conn):
+        """Stop after the step that is running now (a waiting gate is declined). A running step is never killed."""
+        run_id = (params or {}).get("run_id")
+        if not self._task_run or self._task_run[0] != run_id:
+            raise rpc.RpcError(rpc.NOT_FOUND, "no such task run")
+        self._task_run[1].cancel = True
+        for (rid, _step), fut in list(self._task_gates.items()):
+            if rid == run_id and not fut.done():
+                fut.set_result(False)
+        return {"cancelling": True}
+
+    async def h_tasks_history(self, params, _conn):
+        """Runs, newest first. A run without an end that is not running now shows as interrupted."""
+        from .tasks import runner
+
+        rows = await asyncio.to_thread(runner.history, None, (params or {}).get("workflow"))
+        active = self._task_run[0] if self._task_run and not self._jobs["tasks"].done() else None
+        for r in rows:
+            if r["status"] == "running" and r["run"] != active:
+                r["status"] = "interrupted"
+        return rows[:int((params or {}).get("limit") or 100)]
 
     # -- M1-M9: module center ---------------------------------------------------
 
