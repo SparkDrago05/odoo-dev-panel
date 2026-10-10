@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Odoo Dev Panel</title>
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+<link rel="preload" href="../assets/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body class="doc-page">
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="../"><img src="../assets/icon-192.png" alt="" width="28" height="28">Odoo Dev Panel</a>
+    <nav class="top-nav" aria-label="Main">
+      <a href="../#features">Features</a>
+      <a href="../#install">Install</a>
+      <a href="install.html">Docs</a>
+      <a href="https://github.com/SparkDrago05/odoo-dev-panel" class="gh">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap doc-layout">
+  <nav class="doc-nav" aria-label="Documentation">
+    {{nav}}
+  </nav>
+  <main class="prose">
+    {{body}}
+    <p class="edit"><a href="{{source}}">View this page on GitHub</a></p>
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <span>Odoo Dev Panel v{{version}} · <a href="https://github.com/SparkDrago05/odoo-dev-panel/blob/main/LICENSE">Apache-2.0</a></span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/SparkDrago05/odoo-dev-panel/issues">Issues</a>
+      <a href="https://github.com/SparkDrago05/odoo-dev-panel/releases">Releases</a>
+    </nav>
+  </div>
+</footer>
+<script src="../assets/site.js"></script>
+</body>
+</html>

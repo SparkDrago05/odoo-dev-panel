@@ -4,8 +4,25 @@
     {
       "name": "ui-mock",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "app", "exec", "vite", "--port", "1430", "--strictPort"],
+      "runtimeArgs": [
+        "--dir",
+        "app",
+        "exec",
+        "vite",
+        "--port",
+        "1430",
+        "--strictPort"
+      ],
       "port": 1430
+    },
+    {
+      "name": "website",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "python3 website/build.py website/_site && exec python3 -m http.server 8790 --bind 127.0.0.1 -d website/_site"
+      ],
+      "port": 8790
     }
   ]
 }

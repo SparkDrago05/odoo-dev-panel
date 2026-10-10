@@ -50,7 +50,8 @@ cd app && pnpm install && pnpm tauri build
 |---|---|
 | `core/` | Python core and `odp` CLI. Standard library only: no third-party runtime dependencies |
 | `app/` | Tauri v2 + React + TypeScript desktop app. A thin client of the core over JSON-RPC. `pnpm dev` in a plain browser answers from the fixtures in `app/src/dev/mock.ts`, no core needed |
-| `packaging/` | Runtime build, `.deb` maintainer scripts, tmpfiles.d |
+| `packaging/` | Runtime build, `.deb` maintainer scripts, tmpfiles.d, APT repository build (`packaging/apt/`) |
+| `website/` | Project website (GitHub Pages): landing page, docs rendered from the Markdown files. `python3 website/build.py website/_site` builds it locally (needs the `markdown` package) |
 | `spike/` | Container acceptance tests and dev host setup |
 | `docs/` | User docs |
 
@@ -94,3 +95,6 @@ Run them as `script -qec "spike/<test>.sh" /dev/null > spike/.out/<test>.log`.
 2. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
 3. CI checks that the tag matches every version, builds and tests the `.deb`, and creates a **draft** release with the `.deb` and `SHA256SUMS`.
 4. Review the draft on GitHub and publish it.
+5. Publishing triggers the **Pages** workflow. It downloads the `.deb` of the five newest published releases and builds the signed APT repository (`packaging/apt/build-repo.sh`). It builds the website, deploys both to GitHub Pages, then installs the new version from the live repository on Ubuntu 24.04 and 26.04.
+
+The APT signing key is the repository secret `APT_GPG_PRIVATE_KEY` (ASCII-armored, no passphrase). Its public half is `packaging/apt/odoo-dev-panel.asc`; the workflow refuses to sign when the two do not match. To rotate the key, replace both and tell users to download the new public key.

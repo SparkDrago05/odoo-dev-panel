@@ -19,16 +19,38 @@ One control center for the Odoo development environments on an Ubuntu workstatio
 - **Performance:** Odoo CPU and memory, PostgreSQL sessions, lock waits, long queries and connection use, with a verdict on where a slowdown comes from; a read-only explorer of models, fields, relations, external IDs and table sizes; an SQL log grouped by statement.
 - A desktop app and the `odp` CLI with the same features.
 
-Status: active development, released on [GitHub](https://github.com/SparkDrago05/odoo-dev-panel/releases). Ubuntu 24.04 and 26.04, x86_64.
+Website: **[sparkdrago05.github.io/odoo-dev-panel](https://sparkdrago05.github.io/odoo-dev-panel/)**
+
+Status: active development, released on [GitHub](https://github.com/SparkDrago05/odoo-dev-panel/releases) and in an APT repository. Ubuntu 24.04 and 26.04, x86_64.
+
+![Odoo Dev Panel, Databases view](website/assets/screenshot.png)
 
 ## Install
 
+From the APT repository, so that `apt upgrade` brings new versions:
+
 ```sh
-sudo apt install ./odoo-dev-panel_*_amd64.deb
-sudo usermod -aG odoo-dev "$USER"     # then log out and back in
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/odoo-dev-panel.asc https://sparkdrago05.github.io/odoo-dev-panel/apt/odoo-dev-panel.asc
+sudo tee /etc/apt/sources.list.d/odoo-dev-panel.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://sparkdrago05.github.io/odoo-dev-panel/apt
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/odoo-dev-panel.asc
+EOF
+sudo apt update
+sudo apt install odoo-dev-panel
 ```
 
-Then start **Odoo Dev Panel** from the application menu. Details and first steps: [docs/install.md](docs/install.md).
+Then join the `odoo-dev` group and log out and back in:
+
+```sh
+sudo usermod -aG odoo-dev "$USER"
+```
+
+Start **Odoo Dev Panel** from the application menu. Or install a downloaded `.deb` from the [releases page](https://github.com/SparkDrago05/odoo-dev-panel/releases) with `sudo apt install ./odoo-dev-panel_*_amd64.deb`. Details, the signing key fingerprint and first steps: [docs/install.md](docs/install.md).
 
 ## How it works
 
@@ -45,6 +67,8 @@ Desktop app (Tauri) ── JSON-RPC on stdio ──> odp sidecar (Python, as you
 You unlock each run-as user once per boot (one sudo prompt). Its agent then starts and stops Odoo without further passwords. Security model: [SECURITY.md](SECURITY.md).
 
 ## Documentation
+
+Also on the [website](https://sparkdrago05.github.io/odoo-dev-panel/docs/install.html).
 
 - [Install and first run](docs/install.md)
 - [Troubleshooting](docs/troubleshooting.md)

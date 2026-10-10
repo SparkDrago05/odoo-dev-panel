@@ -27,6 +27,7 @@
         "depends": ["sudo-rs | sudo", "systemd"],
         "files": {
           "/usr/lib/odoo-dev-panel": "../../packaging/build/odoo-dev-panel",
+          "/usr/bin/odp": "../../packaging/build/odoo-dev-panel/bin/odp",
           "/usr/lib/tmpfiles.d/odoo-dev-panel.conf": "../../packaging/tmpfiles.d/odoo-dev-panel.conf"
         },
         "postInstallScript": "../../packaging/deb/postinst",

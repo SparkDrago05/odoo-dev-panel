@@ -8,3 +8,6 @@ spike/.out/
 private-docs/
 
 .vscode/
+
+# Website build output (website/build.py)
+website/_site/

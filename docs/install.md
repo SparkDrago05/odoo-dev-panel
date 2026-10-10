@@ -4,11 +4,36 @@ Odoo Dev Panel runs on Ubuntu 24.04 and 26.04 (x86_64). The package brings its o
 
 ## 1. Install
 
+### From the APT repository (recommended)
+
+Add the repository once. `apt upgrade` then brings new versions like any other package.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/odoo-dev-panel.asc https://sparkdrago05.github.io/odoo-dev-panel/apt/odoo-dev-panel.asc
+sudo tee /etc/apt/sources.list.d/odoo-dev-panel.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://sparkdrago05.github.io/odoo-dev-panel/apt
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/odoo-dev-panel.asc
+EOF
+sudo apt update
+sudo apt install odoo-dev-panel
+```
+
+The repository is signed with the key `4F64 08D8 C238 42A0 9B9E 2F84 20E5 8BB7 C1E4 F3A9` (`gpg --show-keys /etc/apt/keyrings/odoo-dev-panel.asc` prints it). It keeps the five newest releases.
+
+### From a downloaded .deb
+
 Download `odoo-dev-panel_<version>_amd64.deb` from the [releases page](https://github.com/SparkDrago05/odoo-dev-panel/releases), then:
 
 ```sh
 sudo apt install ./odoo-dev-panel_*_amd64.deb
 ```
+
+Updates are then manual: install the next `.deb` the same way. To switch to the repository later, add it as above; `apt` treats the installed package as the same one.
 
 The package installs:
 
@@ -137,5 +162,11 @@ sudo apt purge odoo-dev-panel       # also removes /opt/odoo-dev-panel and /run/
 ```
 
 Removal never touches Odoo installations, configs, databases, filestores or backups. The `odoo-dev` group stays.
+
+To also remove the APT repository:
+
+```sh
+sudo rm /etc/apt/sources.list.d/odoo-dev-panel.sources /etc/apt/keyrings/odoo-dev-panel.asc
+```
 
 Problems: see [troubleshooting.md](troubleshooting.md).

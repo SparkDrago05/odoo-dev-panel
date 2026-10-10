@@ -2,7 +2,6 @@
 set -e
 case "$1" in
     remove|purge)
-        rm -f /usr/bin/odp
         rm -rf /usr/lib/odoo-dev-panel
         ;;
 esac

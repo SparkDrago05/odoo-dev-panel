@@ -93,6 +93,7 @@ jobs:
           set -eux
           getent group odoo-dev
           test -x /usr/bin/odp
+          dpkg -S /usr/bin/odp
           test -x /usr/bin/odoo-dev-panel
           test "$(stat -c '%a %G' /opt/odoo-dev-panel/python)" = "2775 odoo-dev"
           odp --help >/dev/null

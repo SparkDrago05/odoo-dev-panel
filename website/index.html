@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Odoo Dev Panel</title>
+<meta name="description" content="One control center for the Odoo development environments on an Ubuntu workstation: discover, diagnose, run and stop instances, and manage databases. Open source, Odoo 15–20.">
+<meta property="og:title" content="Odoo Dev Panel">
+<meta property="og:description" content="Your local Odoo development workspace. Discover, diagnose, run and stop Odoo instances, and manage their databases.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://sparkdrago05.github.io/odoo-dev-panel/">
+<meta property="og:image" content="https://sparkdrago05.github.io/odoo-dev-panel/assets/screenshot.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<link rel="preload" href="assets/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="./"><img src="assets/icon-192.png" alt="" width="28" height="28">Odoo Dev Panel</a>
+    <nav class="top-nav" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="docs/install.html">Docs</a>
+      <a href="https://github.com/SparkDrago05/odoo-dev-panel" class="gh">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Open source · Ubuntu 24.04 and 26.04 · Odoo 15–20</p>
+      <h1>Your local Odoo development workspace.</h1>
+      <p class="lead">One control center for the Odoo environments on your workstation. Discover installations, diagnose and repair them, run and stop instances, and manage databases, however each one was set up.</p>
+      <div class="cta">
+        <a class="btn primary" href="#install">Install with apt</a>
+        <a class="btn" href="https://github.com/SparkDrago05/odoo-dev-panel/releases/latest">Download v{{version}}</a>
+      </div>
+      <figure class="shot">
+        <div class="shot-bar"><span>Odoo Dev Panel</span><i></i><i></i><i></i></div>
+        <picture>
+          <source srcset="assets/screenshot.webp" type="image/webp">
+          <img src="assets/screenshot.png" width="1860" height="1170" alt="Odoo Dev Panel showing the Databases view: three databases of an Odoo 17 installation with backup, snapshot, clone, neutralize and drop actions">
+        </picture>
+      </figure>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="wrap">
+      <h2>Everything a local Odoo needs, in one place</h2>
+      <p class="sub">A desktop app and the <code>odp</code> CLI with the same features. Every change shows its plan first.</p>
+      <div class="grid">
+        <article><h3>Discover</h3><p>Every Odoo source tree, venv, config, database, filestore, running process and systemd unit, without changing anything.</p></article>
+        <article><h3>Run</h3><p>Start an instance as its own Linux user with a database, modules to install or upgrade, <code>--dev</code> flags or a shell. Odoo keeps running when the app closes.</p></article>
+        <article><h3>Doctor</h3><p>Finds broken venvs, unreadable or exposed configs, port clashes, failed units and missing filestores, and repairs a broken venv safely.</p></article>
+        <article><h3>Databases</h3><p>Back up, restore, clone with filestore, neutralize and drop. Snapshot before risky work and revert in one click.</p></article>
+        <article><h3>Modules and compare</h3><p>Dependency pictures, states per database, manifest checks, tests in a throwaway database. Compare two configs, installations or databases.</p></article>
+        <article><h3>Docker</h3><p>Create an Odoo and PostgreSQL stack with one dialog, and manage existing Odoo containers next to native installations.</p></article>
+        <article><h3>Provision</h3><p>New installations for Odoo 15–20 with a pinned Python, a venv, a PostgreSQL role and a first config, from scratch or from a shareable profile.</p></article>
+        <article><h3>Git workspace</h3><p>Branch, changes and sync state of every repository. Fetch, fast-forward pull, switch and clone after a plan. Nothing destructive.</p></article>
+        <article><h3>Python</h3><p>Requirement status of each venv, conflicts, installs with <code>uv</code> as the run-as user, import validation, and dev tools.</p></article>
+        <article><h3>Tasks</h3><p>Saved workflows such as snapshot, upgrade, test. Previewed with every command, data changes confirmed, retry from the failed step.</p></article>
+        <article><h3>Debug</h3><p>Start Odoo under debugpy with saved presets and attach VS Code. Every traceback line opens the file at that line.</p></article>
+        <article><h3>Performance</h3><p>Odoo CPU and memory, PostgreSQL sessions, locks and long queries, with a verdict. Read-only explorer of models, fields and table sizes.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section how">
+    <div class="wrap two">
+      <div>
+        <h2>Odoo runs as its own user</h2>
+        <p>The app talks to a small agent per run-as user, for example <code>odoo17</code>. You unlock each agent once per boot with one sudo prompt. The agent then starts and stops Odoo without further passwords.</p>
+        <p>Odoo survives app close and crashes. Only Stop ends it.</p>
+        <p><a href="docs/security.html">Security model →</a></p>
+      </div>
+      <pre class="diagram" aria-label="Architecture: the desktop app talks to the odp sidecar over JSON-RPC; the sidecar talks to one agent per run-as user over a Unix socket; the agent runs odoo-bin">Desktop app (Tauri)
+   │ JSON-RPC on stdio
+   ▼
+odp sidecar (Python, as you)
+   │ Unix socket /run/odoo-dev-panel/&lt;user&gt;.sock
+   ▼
+odp agent (as odoo17, one per user)
+   │ own session, output to a log file
+   ▼
+odoo-bin</pre>
+    </div>
+  </section>
+
+  <section id="install" class="section">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="sub">Ubuntu 24.04 or 26.04, x86_64. The package brings its own Python; the machine needs neither Python nor Rust.</p>
+
+      <h3 class="step">1. Add the APT repository <span class="tag">recommended</span></h3>
+      <p>You get updates with <code>sudo apt upgrade</code>.</p>
+      <div class="code"><button type="button" class="copy" aria-label="Copy commands">Copy</button><pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/odoo-dev-panel.asc https://sparkdrago05.github.io/odoo-dev-panel/apt/odoo-dev-panel.asc
+sudo tee /etc/apt/sources.list.d/odoo-dev-panel.sources &gt;/dev/null &lt;&lt;'EOF'
+Types: deb
+URIs: https://sparkdrago05.github.io/odoo-dev-panel/apt
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/odoo-dev-panel.asc
+EOF
+sudo apt update
+sudo apt install odoo-dev-panel</code></pre></div>
+      <p class="note">Signing key fingerprint: <code class="fpr">4F64 08D8 C238 42A0 9B9E 2F84 20E5 8BB7 C1E4 F3A9</code></p>
+
+      <h3 class="step">Or download the .deb</h3>
+      <p>Get <code>odoo-dev-panel_{{version}}_amd64.deb</code> from the <a href="https://github.com/SparkDrago05/odoo-dev-panel/releases/latest">latest release</a>. This way you update by hand.</p>
+      <div class="code"><button type="button" class="copy" aria-label="Copy command">Copy</button><pre><code>sudo apt install ./odoo-dev-panel_{{version}}_amd64.deb</code></pre></div>
+
+      <h3 class="step">2. Join the <code>odoo-dev</code> group</h3>
+      <div class="code"><button type="button" class="copy" aria-label="Copy command">Copy</button><pre><code>sudo usermod -aG odoo-dev "$USER"</code></pre></div>
+      <p>Then log out and back in, and start <strong>Odoo Dev Panel</strong> from the application menu. The app can also add you with one sudo prompt. Next steps: <a href="docs/install.html">Install and first run</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <span>Odoo Dev Panel v{{version}} · <a href="https://github.com/SparkDrago05/odoo-dev-panel/blob/main/LICENSE">Apache-2.0</a></span>
+    <nav aria-label="Footer">
+      <a href="docs/install.html">Docs</a>
+      <a href="docs/troubleshooting.html">Troubleshooting</a>
+      <a href="https://github.com/SparkDrago05/odoo-dev-panel/issues">Issues</a>
+      <a href="https://github.com/SparkDrago05/odoo-dev-panel/releases">Releases</a>
+    </nav>
+  </div>
+  <p class="wrap disclaimer">Not affiliated with Odoo S.A. Odoo is a trademark of Odoo S.A.</p>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>
