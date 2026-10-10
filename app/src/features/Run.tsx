@@ -71,6 +71,7 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
   const dbs = snap?.databases.find((d) => d.installation === current?.installation)?.databases ?? [];
   const agentUp = owner !== null && runningAgents.has(owner);
   const oneShot = update.trim() !== "" || install.trim() !== "";
+  const live = current ? app.instanceState(current.path) : null;
 
   // Mirrors run.build_argv in the core; the port shows as "auto" until the core picks a free one.
   const preview = useMemo(() => {
@@ -98,6 +99,16 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
         const done = await snapshotFirst(current.installation, db);
         if (!done.ok) throw new Error(`Snapshot failed, nothing started: ${done.error}`);
         setStatus(`Snapshot: ${done.backup}`);
+      }
+      if (!shell && live?.running) {
+        // The running server keeps the options it started with: new ones only apply to a new process.
+        setStatus("Stopping the running server…");
+        if (live.session) await rpc.request("session.stop", { user: live.session.user, id: live.session.id });
+        else if (live.pid) {
+          const r = await rpc.request<{ stopped: boolean; note?: string }>("process.stop", { pid: live.pid });
+          if (!r.stopped) throw new Error(`The running server did not stop: ${r.note ?? "still running"}. Stop it first, then start.`);
+        }
+        setStatus("");
       }
       const session = await rpc.request<{ id: string }>("run.start", shell ? { instance: current.path, db, shell: true } : {
         instance: current.path,
@@ -187,13 +198,14 @@ export function RuntimeControls({ fixed, onStarted, compact }: { fixed?: string;
       )}
       {oneShot && !db && <Callout tone="info">-u and -i need a database.</Callout>}
       {oneShot && !stopAfterInit && <span className="small muted">Without --stop-after-init the server keeps serving after the upgrade.</span>}
+      {live?.running && <Callout tone="info">Odoo is running with the options it was started with. Changes here apply only after a restart: the button stops it and starts it again with these.</Callout>}
       {status && <span className="small muted">{status}</span>}
       <div className="row end">
         <button className="btn" disabled={!agentUp || starting || !db || debug} onClick={() => start(true)} title="odoo-bin shell on the selected database">
           <TerminalSquare />Shell
         </button>
         <button className="btn primary" disabled={!agentUp || starting || (oneShot && !db) || (debug && !debugPort)} onClick={() => start()}>
-          <Play />{starting ? "Starting…" : oneShot ? "Run" : "Start"}
+          <Play />{starting ? "Starting…" : live?.running ? "Restart with these options" : oneShot ? "Run" : "Start"}
         </button>
       </div>
     </div>

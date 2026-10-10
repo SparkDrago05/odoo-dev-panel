@@ -105,6 +105,7 @@ class Sidecar:
             "run.start": self.h_run_start,
             "run.open": self.h_run_open,
             "session.stop": self.h_session_stop,
+            "process.stop": self.h_process_stop,
             "session.follow": self.h_session_follow,
             "session.unfollow": self.h_session_unfollow,
             "session.write": self.h_session_write,
@@ -124,6 +125,7 @@ class Sidecar:
             "modules.graph": self.h_modules_graph,
             "modules.center": self.h_modules_center,
             "python.env": self.h_python_env,
+            "python.reqfile": self.h_python_reqfile,
             "python.disk": self.h_python_disk,
             "python.export": self.h_python_export,
             "python.tools": self.h_python_tools,
@@ -361,6 +363,43 @@ class Sidecar:
         conn = await self.agent(_user(params))
         return await conn.request("session.resize", {"id": params.get("id"), "rows": params.get("rows"), "cols": params.get("cols")})
 
+    async def h_process_stop(self, params, _conn):
+        """Stop an Odoo process that runs outside the app: its systemd unit (sudo) or SIGTERM through its owner."""
+        from . import procutil, services
+
+        p = params or {}
+        pid = p.get("pid")
+        if not isinstance(pid, int):
+            raise rpc.RpcError(rpc.INVALID_PARAMS, "pid is required")
+        timeout, force = float(p.get("timeout", 15)), bool(p.get("force"))
+        proc = next((x for x in (await self._snap_procs())["processes"] if x["pid"] == pid), None)
+        if proc is None:
+            raise rpc.RpcError(rpc.NOT_FOUND, f"pid {pid} is not a running Odoo process the app knows")
+        if proc.get("unit"):
+            # SIGTERM would only make Restart= start it again: ask systemd.
+            self._unlocking, self._purpose = pwd.getpwuid(os.getuid()).pw_name, "service"
+            try:
+                await services.run_action_askpass("stop", proc["unit"], {"ODP_ASKPASS_SOCK": self.askpass_path})
+            except services.ServiceError as exc:
+                raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+            finally:
+                self._unlocking, self._purpose = None, "unlock"
+            return {"stopped": True, "via": "systemd", "unit": proc["unit"]}
+        me, owner = pwd.getpwuid(os.getuid()).pw_name, proc.get("user")
+        if owner and owner != me:
+            try:
+                conn = await self.agent(owner)
+            except Exception as exc:  # the agent of that user is not running or not unlocked
+                raise rpc.RpcError(rpc.CONFLICT, f"Unlock the {owner} agent first (Sessions → Agents): {exc}") from exc
+            out = await conn.request("process.stop", {"pid": pid, "starttime": proc.get("starttime"),
+                                                      "timeout": timeout, "force": force}, timeout=timeout + 15)
+            return {**out, "via": f"agent of {owner}"}
+        try:
+            out = await procutil.stop_odoo_pid(pid, proc.get("starttime"), timeout, force)
+        except procutil.StopError as exc:
+            raise rpc.RpcError(rpc.INVALID_PARAMS, str(exc)) from exc
+        return {**out, "via": "signal"}
+
     async def h_session_problems(self, params, _conn):
         """Counts per level and grouped warnings/errors of a session log (its last 8 MB)."""
         from . import logs
@@ -370,7 +409,14 @@ class Sidecar:
         minimum = params.get("level") or logs.PROBLEM
         if minimum not in logs.LEVELS:
             raise rpc.RpcError(rpc.INVALID_PARAMS, f"unknown level {minimum!r}")
-        return {**logs.analyze(text, minimum), "start_offset": start, "sql": logs.sql_summary(text)}
+        result = {**logs.analyze(text, minimum), "start_offset": start, "sql": logs.sql_summary(text)}
+        from .pyenv import imports
+
+        for group in result["groups"]:
+            module = imports.module_in(group.get("sample"))
+            if module:
+                group["missing_module"] = {"module": module, "package": imports.package_for(module)}
+        return result
 
     async def h_provision_plan(self, params, _conn):
         """Dry run: preflight, steps, root script (verifier only) and config with placeholder passwords."""
@@ -862,6 +908,15 @@ class Sidecar:
 
         try:
             return await asyncio.to_thread(api.show, params or {}, await self._snap_procs())
+        except api.ApiError as exc:
+            raise self._py_error(exc) from exc
+
+    async def h_python_reqfile(self, params, _conn):
+        """Add or remove a requirement file of an installation (op, root, path). Doctor and repairs use it."""
+        from .pyenv import api
+
+        try:
+            return await asyncio.to_thread(api.reqfile, params or {}, await self._snap_procs())
         except api.ApiError as exc:
             raise self._py_error(exc) from exc
 

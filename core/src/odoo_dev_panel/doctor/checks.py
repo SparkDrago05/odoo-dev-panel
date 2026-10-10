@@ -20,7 +20,7 @@ from .. import paths
 from ..discover import venv as venv_mod
 from ..discover.configs import parse_config, split_addons_path
 from ..provision.spec import PYTHON_BY_VERSION
-from . import requirements
+from . import reqfiles, requirements
 
 ERROR, WARNING, INFO = "error", "warning", "info"
 
@@ -34,6 +34,8 @@ WHY = {
     "venv-system-python": "The venv runs the distribution's Python. The next Ubuntu upgrade can replace that "
                           "Python and break the venv (the cause of the broken venvs on the reference machine). "
                           "A rebuild pins a Python managed by uv that upgrades do not touch.",
+    "venv-manifest-deps-missing": "Addon manifests list these Python dependencies (external_dependencies). Odoo refuses "
+                                  "to load such an addon, or fails on import, until the package is installed in the venv.",
     "venv-packages-missing": "Odoo or an addon imports these packages. Without them a server, an upgrade or a "
                              "module install stops with ModuleNotFoundError.",
     "addons-path-missing": "Odoo refuses to start when an addons_path entry does not exist "
@@ -92,6 +94,7 @@ class Finding:
     detail: str = ""
     commands: list[str] = field(default_factory=list)  # suggested; never run by the doctor
     repair: str | None = None  # "venv" (H12) or "config-perms" (H13): the app can repair it
+    install: list[str] = field(default_factory=list)  # package specifiers the app can install into the venv
     installation: str | None = None
 
     @property
@@ -167,16 +170,25 @@ def python_range(source: str, version: str | None) -> tuple[tuple[int, int] | No
     return FALLBACK_RANGE.get(version or "", (None, None))
 
 
-def requirement_files(inst: dict) -> list[str]:
-    """odoo/requirements.txt plus the requirements.txt of custom repositories, two folders deep."""
+def default_requirement_files(inst: dict) -> list[str]:
+    """odoo/requirements.txt, custom/requirements.txt and the ones of custom repositories, two folders deep."""
     files = [os.path.join(inst["source"], "requirements.txt")]
     custom = Path(inst["root"], "custom")
-    for pattern in ("*/requirements.txt", "*/*/requirements.txt"):
+    for pattern in ("requirements.txt", "*/requirements.txt", "*/*/requirements.txt"):
         try:
             files += sorted(str(p) for p in custom.glob(pattern))
         except OSError:
             pass
     return [f for f in files if os.path.isfile(f)]
+
+
+def requirement_files(inst: dict) -> list[str]:
+    """The default files plus the ones the developer added (``reqfiles``), without duplicates."""
+    out = default_requirement_files(inst)
+    for path in reqfiles.added(inst["root"]):
+        if path not in out:
+            out.append(path)
+    return out
 
 
 def check_venv(ctx: Context) -> list[Finding]:
@@ -227,9 +239,39 @@ def _missing_packages(inst: dict, info: venv_mod.VenvInfo, user: str, repair: st
             "H2", "venv-packages-missing", ERROR if core else WARNING, path,
             f"{len(gone)} package(s) from {path} missing in {info.path}", shown,
             commands=[uv_as(user, f"pip install --python {q(info.path + '/bin/python')} -r {q(path)}")],
-            repair=repair, installation=inst["root"],
+            repair=repair, installation=inst["root"], install=_specifiers(apply, gone),
         ))
+    out += _manifest_packages(inst, info, user, have)
     return out
+
+
+def _specifiers(reqs: list, names: list[str]) -> list[str]:
+    from ..pyenv import specs
+
+    out = []
+    for name in names:
+        req = next((r for r in reqs if r.name == name), None)
+        spec = specs.requirement_spec(req.raw).replace(" ", "") if req else ""
+        out.append(f"{name}{spec}")
+    return out
+
+
+def _manifest_packages(inst: dict, info: venv_mod.VenvInfo, user: str, have: dict[str, str]) -> list[Finding]:
+    """Python dependencies of addon manifests (external_dependencies) that the venv cannot import."""
+    from ..pyenv import env as pyenv
+
+    rows = pyenv._manifest_rows(inst, info.python_version, have, set())
+    if not rows:
+        return []
+    names = [r["name"] for r in rows]
+    shown = ", ".join(f"{r['raw']} ({r['detail'].split('declared by ')[-1]})" for r in rows[:6])
+    shown += f" and {len(rows) - 6} more" if len(rows) > 6 else ""
+    return [Finding(
+        "H2", "venv-manifest-deps-missing", WARNING, inst["root"],
+        f"{len(rows)} Python dependenc{'y' if len(rows) == 1 else 'ies'} of addon manifests missing in {info.path}", shown,
+        commands=[uv_as(user, f"pip install --python {q(info.path + '/bin/python')} " + " ".join(q(n) for n in names))],
+        installation=inst["root"], install=names,
+    )]
 
 
 # -- H3 / H4 / H5 -------------------------------------------------------------

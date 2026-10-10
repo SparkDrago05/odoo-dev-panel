@@ -218,6 +218,7 @@ export function InstanceView({ path, tab = "overview" }: { path: string; tab?: "
           actions={<>
             {st.running && st.port && <button className="btn" onClick={() => app.openPort(st.port!)}><ExternalLink />Open</button>}
             {st.running && st.session ? <button className="btn" onClick={() => app.stopSession(st.session!)}><Square />Stop</button>
+              : st.running && st.external && st.pid ? <button className="btn" onClick={() => app.stopExternal(st.pid!, inst.name, st.unit)}><Square />Stop</button>
               : <button className="btn primary" disabled={st.running || !installation} onClick={() => app.quickStart(path)} title={st.running ? "Already running" : "Start with the config's defaults"}><Play />Start</button>}
             <button className="btn" onClick={() => app.setDialog({ kind: "config", path, root: inst.installation })}><Pencil />Edit config</button>
             <InstanceMenu inst={inst} />

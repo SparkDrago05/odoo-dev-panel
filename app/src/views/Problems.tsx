@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronRight, RefreshCw, XCircle } from "lucide-react";
+import { AlertTriangle, ChevronRight, PackagePlus, RefreshCw, XCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { rpc } from "../rpc";
 import { useApp } from "../state/app";
@@ -8,6 +8,7 @@ import { CopyButton, EmptyState, Loading } from "../ui/primitives";
 export type ProblemGroup = {
   id: string; level: Level; logger: string; title: string; exception?: string | null;
   frame?: { file: string; line: number; function: string } | null;
+  missing_module?: { module: string; package: string } | null;
   count: number; first_line?: number; last_line?: number; first_time?: string; last_time: string; dbs?: string[]; sample: string;
 };
 export type SqlSummary = { queries: number; statements: number; timed: boolean;
@@ -45,7 +46,8 @@ export function openFrame(file: string, line: number) {
 }
 
 /** Warnings and errors of a log, grouped (the core does the grouping). */
-export function ProblemList({ groups }: { groups: ProblemGroup[] }) {
+export function ProblemList({ groups, root }: { groups: ProblemGroup[]; root?: string | null }) {
+  const app = useApp();
   const [open, setOpen] = useState<string | null>(null);
   if (!groups.length) return <EmptyState icon={<AlertTriangle />} title="No warnings or errors">The log has no WARNING, ERROR or CRITICAL records.</EmptyState>;
   return (
@@ -74,6 +76,14 @@ export function ProblemList({ groups }: { groups: ProblemGroup[] }) {
                 <span className="xs dim">
                   {g.first_line !== undefined && (g.count === 1 ? `line ${g.first_line}` : `lines ${g.first_line}–${g.last_line}`)}{g.last_time && ` · last at ${g.last_time}`}
                 </span>
+                {g.missing_module && root && (
+                  <div className="row tight">
+                    <button className="btn sm primary" onClick={() => app.setDialog({ kind: "python-action", root, params: { op: "install", packages: [g.missing_module!.package] } })}>
+                      <PackagePlus />Install {g.missing_module.package}…
+                    </button>
+                    <span className="xs dim">into the venv of {root} · import name {g.missing_module.module}</span>
+                  </div>
+                )}
                 <div style={{ position: "relative" }}>
                   <pre className="block">{g.sample}</pre>
                   <div style={{ position: "absolute", top: 4, right: 4 }}><CopyButton text={g.sample} label="Copy traceback" /></div>
@@ -88,8 +98,9 @@ export function ProblemList({ groups }: { groups: ProblemGroup[] }) {
 }
 
 /** Problems view of a session log. Reloads when the session ends (the last lines are often the interesting ones). */
-export function Problems({ user, id, state }: { user: string; id: string; state: string }) {
-  const { onError } = useApp();
+export function Problems({ user, id, state, instance }: { user: string; id: string; state: string; instance?: string }) {
+  const { onError, snap } = useApp();
+  const root = (instance && snap?.instances.find((i) => i.path === instance)?.installation) || null;
   const [result, setResult] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const load = useCallback(async () => {
@@ -116,7 +127,7 @@ export function Problems({ user, id, state }: { user: string; id: string; state:
         <button className="btn ghost sm" onClick={load} disabled={loading}><RefreshCw />{loading ? "Reading…" : "Refresh"}</button>
       </div>
       {!result ? <Loading>Reading log…</Loading> : <>
-        <ProblemList groups={result.groups} />
+        <ProblemList groups={result.groups} root={root} />
         {result.sql && result.sql.queries > 0 && <><div className="term-bar"><span className="small strong">SQL</span></div><SqlList sql={result.sql} /></>}
       </>}
     </div>

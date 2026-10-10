@@ -64,6 +64,7 @@ class VenvRepairPlan:
     requirements: list[str] = field(default_factory=list)
     extras: list[str] = field(default_factory=list)  # in the old venv, in no requirements file
     carry_extras: bool = False
+    overrides: list[str] = field(default_factory=list)  # name+specifier lines chosen for requirement conflicts
     checks: list[Check] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
 
@@ -200,8 +201,54 @@ def plan_venv_repair(inst: dict, processes: list[dict], python: str | None = Non
                 continue
             wanted |= {r.name for r in requirements.applicable(reqs, env)[0]}
         p.extras = sorted(set(old_packages(venv)) - wanted - NOT_CARRIED)
+    if python:
+        p.overrides, won, left = resolve_conflicts(p.requirements, os.path.join(inst["source"], "requirements.txt"),
+                                                   requirements.environment(python))
+        for note in won:
+            checks.append(Check("conflict-resolved", WARN, note))
+        for note in left:
+            checks.append(Check("conflict", WARN, f"{note}: the install will fail until the files agree"))
     p.steps = build_steps(p)
     return p
+
+
+def resolve_conflicts(files: list[str], core: str, env: dict[str, str]) -> tuple[list[str], list[str], list[str]]:
+    """(override lines, notes of what won, notes of conflicts left alone).
+
+    Two requirement files asking one package for versions no single version satisfies make the install fail
+    ("python-dateutil==2.7.3 and python-dateutil==2.8.2"). The pin of a custom repository wins over Odoo's own
+    file: it was written for this installation. Conflicts between custom files are left for the developer.
+    """
+    from ..pyenv import specs
+
+    asked: dict[str, list[tuple[str, str]]] = {}
+    for path in files:
+        try:
+            reqs = requirements.parse(Path(path).read_text(errors="replace"))
+        except OSError:
+            continue
+        for req in requirements.applicable(reqs, env)[0]:
+            spec = specs.requirement_spec(req.raw)
+            if spec:
+                asked.setdefault(req.name, []).append((path, spec))
+    lines, won, left = [], [], []
+    for name, rows in sorted(asked.items()):
+        distinct = sorted({spec for _, spec in rows})
+        reason = specs.conflict(distinct) if len(distinct) > 1 else None
+        if not reason:
+            continue
+        custom = sorted({spec for path, spec in rows if path != core})
+        if custom and not (len(custom) > 1 and specs.conflict(custom)):
+            chosen = ",".join(custom)
+            lines.append(f"{name}{chosen}")
+            won.append(f"{name}: {reason}; using {chosen} from the custom requirements")
+        else:
+            left.append(f"{name}: {reason}")
+    return lines, won, left
+
+
+def override_lines(p: VenvRepairPlan) -> list[str]:
+    return list(PIP_OVERRIDES.get(p.python, [])) + p.overrides
 
 
 def _uv_env(p: VenvRepairPlan) -> str:
@@ -210,7 +257,7 @@ def _uv_env(p: VenvRepairPlan) -> str:
 
 def pip_args(p: VenvRepairPlan) -> list[str]:
     args = ["pip", "install", "--python", f"{p.new}/bin/python"]
-    if PIP_OVERRIDES.get(p.python):
+    if override_lines(p):
         args += ["--override", f"{p.root}/.odp-pip-overrides.txt"]
     for path in p.requirements:
         args += ["-r", path]
@@ -307,10 +354,10 @@ async def repair_venv(p: VenvRepairPlan, report: Report, running: Callable[[Venv
             _emit(report, phase, "ok")
             phase = "pip"
             _emit(report, phase, "start", "Install the requirements")
-            if PIP_OVERRIDES.get(p.python) and _read(f"{p.root}/.odp-pip-overrides.txt").split() != PIP_OVERRIDES[p.python]:
+            if override_lines(p) and _read(f"{p.root}/.odp-pip-overrides.txt").split() != override_lines(p):
                 # Written by the run-as user: the dev user may not be able to write the installation root.
                 await agent(phase, ["/bin/sh", "-c", 'f=$1; shift; printf "%s\\n" "$@" > "$f"', "pins",
-                                    f"{p.root}/.odp-pip-overrides.txt", *PIP_OVERRIDES[p.python]])
+                                    f"{p.root}/.odp-pip-overrides.txt", *override_lines(p)])
             await agent(phase, [uv, *pip_args(p)], {"CFLAGS": BUILD_CFLAGS})
             _emit(report, phase, "ok")
             phase = "validate"

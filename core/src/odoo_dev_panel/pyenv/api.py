@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..doctor import reqfiles
 from ..git import workspace
 from . import actions, env, tools
 
@@ -43,3 +44,19 @@ async def execute(p: dict, conn, report, root_runner) -> dict:
     if p["kind"] == "tool":
         out["tool"] = p["tool"]
     return out
+
+
+def reqfile(params: dict, snapshot: dict) -> dict:
+    """op: add or remove a requirement file of an installation. Returns the new detected list."""
+    inst = env.installation(snapshot, params.get("root"))
+    op = params.get("op")
+    try:
+        if op == "add":
+            reqfiles.add(inst["root"], params.get("path"))
+        elif op == "remove":
+            reqfiles.remove(inst["root"], params.get("path"))
+        else:
+            raise env.EnvError("op is add or remove")
+    except reqfiles.ReqFilesError as exc:
+        raise env.EnvError(str(exc)) from exc
+    return {"detected": env.detected(inst, repos(snapshot, inst["root"]))}

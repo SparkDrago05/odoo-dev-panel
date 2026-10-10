@@ -11,10 +11,10 @@ import os
 from pathlib import Path
 
 from ..discover import venv as venv_mod
-from ..doctor import requirements
-from ..doctor.checks import requirement_files
+from ..doctor import manifests, reqfiles, requirements
+from ..doctor.checks import default_requirement_files, requirement_files
 from ..provision.spec import PYTHON_BY_VERSION
-from . import specs
+from . import imports, specs
 
 PYTHON_DIR = "/opt/odoo-dev-panel/python"
 
@@ -47,6 +47,22 @@ def files_for(inst: dict, repos: list[str] | None = None) -> list[str]:
         path = os.path.join(repo, "requirements.txt")
         if os.path.isfile(path) and path not in out:
             out.append(path)
+    return out
+
+
+def detected(inst: dict, repos: list[str] | None = None) -> list[dict]:
+    """Every requirements*.txt under the installation root: used (default or repository), added, or available."""
+    default = set(default_requirement_files(inst)) | set(files_for(inst, repos)) - set(reqfiles.added(inst["root"]))
+    added = set(reqfiles.added(inst["root"]))
+    skip = (inst["venv"],) if inst.get("venv") else ()
+    out = []
+    for path in reqfiles.detect(inst["root"], skip):
+        state = "added" if path in added else "used" if path in default else "available"
+        try:
+            count = len(requirements.parse(Path(path).read_text(errors="replace")))
+        except OSError:
+            count = 0
+        out.append({"path": path, "state": state, "count": count})
     return out
 
 
@@ -126,6 +142,7 @@ def describe(inst: dict, repos: list[str] | None = None) -> dict:
                     row["status"], row["detail"] = "unknown", f"cannot compare {version} with {spec}"
             rows.append(row)
             wanted.setdefault(req.name, []).append(row)
+    rows += _manifest_rows(inst, py, pkgs, {r["name"] for r in rows})
     conflicts = []
     for name, asked in wanted.items():
         by_file = [r for r in asked if r["spec"]]
@@ -136,10 +153,40 @@ def describe(inst: dict, repos: list[str] | None = None) -> dict:
             conflicts.append({"name": name, "reason": reason,
                               "asked": [{"file": r["file"], "spec": r["spec"]} for r in by_file]})
     required = {r["name"] for r in rows} | {a for r in rows for a in requirements.ALIASES.get(r["name"], set())}
-    counts = {s: sum(r["status"] == s for r in rows) for s in ("ok", "missing", "mismatch", "not-applicable", "unknown")}
+    counts = {s: sum(r["status"] == s for r in rows)
+              for s in ("ok", "missing", "mismatch", "not-applicable", "unknown", "manifest-missing")}
     return {"root": inst["root"], "version": inst.get("version"), "run_as": inst.get("owner"), "interpreter": interp,
-            "files": files, "requirements": rows, "counts": counts, "conflicts": conflicts,
+            "files": files, "detected": detected(inst, repos), "requirements": rows, "counts": counts, "conflicts": conflicts,
             "packages": dict(sorted(pkgs.items())), "extras": sorted(set(pkgs) - required)}
+
+
+def _manifest_rows(inst: dict, py: str | None, pkgs: dict[str, str], known: set[str]) -> list[dict]:
+    """Python dependencies addon manifests declare that the venv cannot import and no requirement file names.
+
+    They are import names, so the install button shows the distribution the app maps them to. They stay out
+    of "Install missing": a wrong mapping must never install a package nobody asked for.
+    """
+    venv = inst.get("venv")
+    if not venv or not py:
+        return []
+    site = venv_mod.site_packages(venv, py)
+    tops = venv_mod.top_levels(site)
+    rows = []
+    for dep, paths_ in sorted(manifests.external_python(inst["root"], (venv,)).items()):
+        name, spec = imports.split(dep)
+        if not name:
+            continue
+        dist = venv_mod.normalize(name)
+        package = imports.package_for(name)
+        if dist in pkgs or venv_mod.normalize(package) in pkgs or name in tops or name in known or dist in known \
+                or venv_mod.normalize(package) in known:
+            continue
+        addons = sorted({os.path.basename(os.path.dirname(p)) for p in paths_})
+        rows.append({"file": paths_[0], "name": venv_mod.normalize(package), "raw": dep, "spec": spec.replace(" ", ""),
+                     "marker": None, "installed": None, "installed_as": None, "status": "manifest-missing",
+                     "detail": f"import {name} fails; declared by {', '.join(addons[:5])}"
+                               + (f" and {len(addons) - 5} more" if len(addons) > 5 else "")})
+    return rows
 
 
 def freeze(inst: dict) -> str:

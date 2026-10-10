@@ -136,6 +136,7 @@ class Agent:
             "session.list": self.h_list,
             "session.get": self.h_get,
             "session.stop": self.h_stop,
+            "process.stop": self.h_process_stop,
             "session.read": self.h_read,
             "session.follow": self.h_follow,
             "session.unfollow": self.h_unfollow,
@@ -181,6 +182,17 @@ class Agent:
         timeout = float((params or {}).get("timeout", 15))
         session = await self.manager.stop(_session_id(params), timeout=timeout)
         return session.to_public()
+
+    async def h_process_stop(self, params, conn):
+        """Stop an Odoo process this agent's user owns but did not start (started in a terminal, by cron...)."""
+        from .. import procutil
+
+        p = params or {}
+        try:
+            return await procutil.stop_odoo_pid(p.get("pid"), p.get("starttime"), float(p.get("timeout", 15)),
+                                                bool(p.get("force")))
+        except procutil.StopError as exc:
+            raise RpcError(INVALID_PARAMS, str(exc)) from exc
 
     async def h_read(self, params, conn):
         params = params or {}

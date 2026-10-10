@@ -61,7 +61,7 @@ export type StepEvent = { run_id: string; step: string; status: "start" | "outpu
 
 export type Finding = {
   check: string; code: string; severity: "error" | "warning" | "info"; subject: string; title: string;
-  detail: string; why: string; commands: string[]; repair: string | null; installation: string | null;
+  detail: string; why: string; commands: string[]; repair: string | null; install?: string[]; installation: string | null;
 };
 export type DoctorReport = { findings: Finding[]; counts: Record<string, number>; not_checked: string[] };
 
@@ -186,15 +186,16 @@ export type ModuleTestRun = {
 
 export type PyRequirement = {
   file: string; name: string; raw: string; spec: string; marker: string | null; installed: string | null; installed_as: string | null;
-  status: "ok" | "missing" | "mismatch" | "not-applicable" | "unknown"; detail: string;
+  status: "ok" | "missing" | "mismatch" | "not-applicable" | "unknown" | "manifest-missing"; detail: string;
 };
+export type PyReqFile = { path: string; state: "used" | "added" | "available"; count: number };
 export type PyEnv = {
   root: string; version: string | null; run_as: string | null;
   interpreter: {
     venv: string | null; python: string | null; target: string | null; version: string | null; built_for: string | null; pinned: string | null;
     uv_managed: boolean; system_python: boolean; problem: string | null; matches_pin: boolean | null;
   };
-  files: string[]; requirements: PyRequirement[]; counts: Record<"ok" | "missing" | "mismatch" | "not-applicable" | "unknown", number>;
+  files: string[]; detected: PyReqFile[]; requirements: PyRequirement[]; counts: Record<"ok" | "missing" | "mismatch" | "not-applicable" | "unknown" | "manifest-missing", number>;
   conflicts: { name: string; reason: string; asked: { file: string; spec: string }[] }[]; packages: Record<string, string>; extras: string[];
 };
 export type PyTool = { tool: string; scope: "venv" | "system"; installed: boolean; version: string | null; detail: string; patched?: boolean };

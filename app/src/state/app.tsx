@@ -341,6 +341,21 @@ function useAppState() {
   }, [ownerOf, runningAgents, act, onError, startSession]);
 
   const stopSession = useCallback((s: Session) => act(`stopping ${s.name}`, () => rpc.request("session.stop", { user: s.user, id: s.id })), [act]);
+  /** Stop an Odoo process that was started outside the app (its unit through sudo, or SIGTERM through its owner). */
+  const stopExternal = useCallback(async (pid: number, label: string, unit?: string | null) => {
+    const ok = await confirm({
+      title: `Stop ${label}?`, confirm: "Stop", danger: true,
+      body: unit ? `Runs systemctl stop ${unit} with sudo.` : `Sends SIGTERM to pid ${pid}. Odoo finishes running requests and shuts down.`,
+    });
+    if (!ok) return;
+    await act(`stopping ${label}`, async () => {
+      let r = await rpc.request<{ stopped: boolean; note?: string }>("process.stop", { pid });
+      if (!r.stopped && await confirm({ title: `${label} did not stop`, body: `${r.note ?? "Still running."} Force it with SIGKILL? Unsaved work in running requests is lost.`, confirm: "Force stop", danger: true })) {
+        r = await rpc.request("process.stop", { pid, force: true });
+      }
+      await scan();
+    });
+  }, [act, confirm, scan]);
   const openPort = useCallback((port: number) => { rpc.request("run.open", { port }).catch((e) => onError(String(e.message))); }, [onError]);
 
   return {
@@ -354,6 +369,6 @@ function useAppState() {
     snap, scanning, scan,
     doctor, runDoctor,
     followed: followedLive, log, follow,
-    runningAgents, ownerOf, instanceState, startSession, quickStart, stopSession, openPort,
+    runningAgents, ownerOf, instanceState, startSession, quickStart, stopSession, stopExternal, openPort,
   };
 }

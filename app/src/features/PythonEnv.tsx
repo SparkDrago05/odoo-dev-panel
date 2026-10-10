@@ -1,16 +1,16 @@
 import {
-  AlertTriangle, CheckCircle2, ClipboardCopy, Cpu, Download, FlaskConical, GitCompare, HardDrive, PackagePlus, RefreshCw, Wrench, XCircle,
+  AlertTriangle, CheckCircle2, ClipboardCopy, Cpu, Download, FileText, FlaskConical, GitCompare, HardDrive, PackagePlus, Plus, RefreshCw, Wrench, X, XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { rpc } from "../rpc";
 import { useApp } from "../state/app";
-import type { Check, PyDisk, PyEnv, PyPlan, PyTool, Step } from "../types";
+import type { Check, PyDisk, PyEnv, PyPlan, PyReqFile, PyTool, Step } from "../types";
 import { Dialog } from "../ui/Dialog";
 import { Checks, Disclosure, type Finished, JobView, Steps, useJob } from "../ui/Job";
 import { Badge, Callout, EmptyState, Field, KV, Loading, Segmented, type Tone } from "../ui/primitives";
 import { Panel } from "../views/common";
 
-const STATUS_TONE: Record<string, Tone> = { ok: "ok", missing: "bad", mismatch: "warn", "not-applicable": "idle", unknown: "info" };
+const STATUS_TONE: Record<string, Tone> = { ok: "ok", missing: "bad", mismatch: "warn", "not-applicable": "idle", unknown: "info", "manifest-missing": "warn" };
 const mib = (b: number) => (b > 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GiB` : `${Math.round(b / 1024 ** 2)} MiB`);
 
 /** The Python tab of an installation: interpreter, requirement status, conflicts, packages, actions, dev tools. */
@@ -36,9 +36,16 @@ export function PythonPanel({ root }: { root: string }) {
   useEffect(() => { load(); }, [load, app.versions.python]);
   useEffect(() => rpc.on("python.finished", () => { load(); }), [load]);
 
-  const rows = useMemo(() => (data?.requirements ?? []).filter((r) => view === "all" || ["missing", "mismatch", "unknown"].includes(r.status)), [data, view]);
+  const rows = useMemo(() => (data?.requirements ?? []).filter((r) => view === "all" || ["missing", "mismatch", "unknown", "manifest-missing"].includes(r.status)), [data, view]);
   const rel = (f: string) => (f.startsWith(root + "/") ? f.slice(root.length + 1) : f);
   const act = (params: Record<string, unknown>) => app.setDialog({ kind: "python-action", root, params });
+  const reqFile = async (op: "add" | "remove", path: string) => {
+    try {
+      await rpc.request("python.reqfile", { root, op, path });
+      app.notify("ok", op === "add" ? "Added. Doctor and Install missing now include it." : "Removed from this installation.");
+      await load();
+    } catch (e) { app.onError(String((e as Error).message)); }
+  };
   const loadDisk = async () => { setDiskBusy(true); try { setDisk(await rpc.request<PyDisk>("python.disk", { root })); } catch (e) { app.onError(String((e as Error).message)); } finally { setDiskBusy(false); } };
   const exportList = async () => {
     const out = await rpc.request<{ text: string }>("python.export", { root }).catch((e) => { app.onError(String(e.message)); return null; });
@@ -102,19 +109,35 @@ export function PythonPanel({ root }: { root: string }) {
       ))}
 
       <Panel flush title={<div className="row"><h2>Requirements</h2><span className="xs dim">from {data.files.length} file(s); measured from dist-info, not guessed</span></div>}
-        actions={<Segmented label="Show" value={view} onChange={setView} options={[{ value: "problems", label: `Problems (${data.counts.missing + data.counts.mismatch + data.counts.unknown})` }, { value: "all", label: `All (${data.requirements.length})` }]} />}>
+        actions={<Segmented label="Show" value={view} onChange={setView} options={[{ value: "problems", label: `Problems (${data.counts.missing + data.counts.mismatch + data.counts.unknown + data.counts["manifest-missing"]})` }, { value: "all", label: `All (${data.requirements.length})` }]} />}>
         {rows.length === 0 ? <EmptyState icon={<CheckCircle2 />} title="Every requirement is met">{data.counts["not-applicable"]} line(s) do not apply to this Python.</EmptyState> : (
           <div className="list">
             {rows.map((r, n) => (
               <div key={n} className="list-row" style={{ minHeight: 38 }}>
-                <Badge tone={STATUS_TONE[r.status]}>{r.status}</Badge>
+                <Badge tone={STATUS_TONE[r.status]}>{r.status === "manifest-missing" ? "addon needs" : r.status}</Badge>
                 <span className="strong mono small" style={{ minWidth: 160 }}>{r.name}</span>
                 <span className="mono xs" style={{ minWidth: 110 }}>{r.spec || "any"}</span>
                 <span className="mono xs dim" style={{ minWidth: 90 }}>{r.installed ?? "—"}{r.installed_as && r.installed_as !== r.name ? ` (${r.installed_as})` : ""}</span>
                 <span className="xs dim truncate grow" title={r.detail}>{rel(r.file)}</span>
-                {(r.status === "missing" || r.status === "mismatch") && (
+                {(r.status === "missing" || r.status === "mismatch" || r.status === "manifest-missing") && (
                   <button className="btn ghost sm" onClick={() => act({ op: "install", packages: [`${r.name}${r.spec.replace(/\s+/g, "")}`] })}><Download />Install</button>
                 )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel flush title={<div className="row"><h2>Requirement files</h2><span className="xs dim">{data.detected.length} found under {root}</span></div>}>
+        {data.detected.length === 0 ? <EmptyState icon={<FileText />} title="No requirements.txt found">Nothing named requirements*.txt exists under this installation.</EmptyState> : (
+          <div className="list">
+            {data.detected.map((f: PyReqFile) => (
+              <div key={f.path} className="list-row" style={{ minHeight: 38 }}>
+                <Badge tone={f.state === "available" ? "idle" : "ok"}>{f.state === "available" ? "not used" : f.state}</Badge>
+                <span className="mono xs truncate grow" title={f.path}>{rel(f.path)}</span>
+                <span className="xs dim">{f.count} line(s)</span>
+                {f.state === "available" && <button className="btn ghost sm" onClick={() => reqFile("add", f.path)}><Plus />Add</button>}
+                {f.state === "added" && <button className="btn ghost sm" onClick={() => reqFile("remove", f.path)}><X />Remove</button>}
               </div>
             ))}
           </div>

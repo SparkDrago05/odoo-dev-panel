@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronRight, HeartPulse, Info, RefreshCw, ShieldCheck, Stethoscope, Wrench, XCircle } from "lucide-react";
+import { AlertTriangle, ChevronRight, HeartPulse, Info, PackagePlus, RefreshCw, ShieldCheck, Stethoscope, Wrench, XCircle } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { Inspector, InspectorSection } from "../shell/Chrome";
@@ -133,6 +133,14 @@ export function DoctorView({ finding: selectedKey }: { finding?: string }) {
             <code className="xs dim break">{selected.subject}</code>
           </InspectorSection>
           <InspectorSection title="Why it matters"><p>{selected.why}</p></InspectorSection>
+          {selected.install && selected.install.length > 0 && selected.installation && (
+            <InspectorSection title="Install">
+              <button className="btn primary" onClick={() => app.setDialog({ kind: "python-action", root: selected.installation!, params: { op: "install", packages: selected.install } })}>
+                <PackagePlus />Install {selected.install.length} package(s)…
+              </button>
+              <span className="xs dim">Into the existing venv with uv, as its run-as user. Shows the plan first; nothing is removed. Run the checks again afterwards.</span>
+            </InspectorSection>
+          )}
           {selected.repair === "venv" && selected.installation && (
             <InspectorSection title="Fix">
               <button className="btn primary" onClick={() => app.setDialog({ kind: "repair-venv", root: selected.installation! })}><Wrench />Repair venv…</button>

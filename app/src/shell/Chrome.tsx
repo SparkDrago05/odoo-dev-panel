@@ -153,7 +153,7 @@ export function Dock() {
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {view === "problems" && !s.pty
-          ? <div style={{ overflow: "auto", height: "100%" }}><Problems user={s.user} id={s.id} state={s.state} /></div>
+          ? <div style={{ overflow: "auto", height: "100%" }}><Problems user={s.user} id={s.id} state={s.state} instance={s.meta?.instance} /></div>
           : <LogConsole text={app.log} levels={!s.pty} empty={running ? "Waiting for output…" : "No output."} />}
       </div>
     </motion.section>

@@ -114,7 +114,7 @@ function SessionDetail({ s }: { s: Session }) {
         {view === "problems" && !s.pty ? (
           <div style={{ overflow: "auto", minHeight: 0 }}>
             <div className="term-bar"><Segmented label="View" value={view} onChange={setView} options={[{ value: "output", label: "Output" }, { value: "problems", label: "Problems" }]} /></div>
-            <Problems user={s.user} id={s.id} state={s.state} />
+            <Problems user={s.user} id={s.id} state={s.state} instance={s.meta?.instance} />
           </div>
         ) : (
           <LogConsole text={app.log} levels={!s.pty} empty={running ? "Waiting for output…" : "No output."}

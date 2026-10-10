@@ -113,3 +113,21 @@ def installed(site: str | Path) -> dict[str, str]:
         if match:
             result[normalize(match.group("name"))] = match.group("version")
     return result
+
+
+def top_levels(site: str | Path) -> set[str]:
+    """Importable top-level names of the installed distributions (top_level.txt), as they are spelled."""
+    result: set[str] = set()
+    try:
+        names = os.listdir(site)
+    except OSError:
+        return result
+    for name in names:
+        if not name.endswith((".dist-info", ".egg-info")):
+            continue
+        try:
+            with open(os.path.join(site, name, "top_level.txt"), encoding="utf-8", errors="replace") as fh:
+                result.update(t.strip() for t in fh.read().split() if t.strip())
+        except OSError:
+            continue
+    return result
