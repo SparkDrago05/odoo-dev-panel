@@ -2,6 +2,11 @@
 
 Run `odp doctor` first: it checks the known problems read-only and says what to do. The cases below are the ones it cannot fix for you.
 
+## The app window
+
+**The app crashes at launch (0.14.0 and older): "Unable to create Cairo image surface" or a segmentation fault.**
+The saved window size became too large to allocate. It was stored in physical pixels, so it changed whenever the display scale differed between closing and reopening, for example with two monitors at different scales. Later versions keep the size in logical pixels and ignore a damaged one. On an affected version, delete `~/.config/io.github.sparkdrago05.odoo-dev-panel/.window-state.json` and start the app again.
+
 ## Agents
 
 **"No version users found" / a run-as user is missing from the Agents list.**

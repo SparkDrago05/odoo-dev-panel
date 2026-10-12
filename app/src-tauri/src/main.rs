@@ -10,8 +10,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
+use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, State, WindowEvent};
+use tauri_plugin_window_state::StateFlags;
 
 const INSTALLED_ODP: &str = "/usr/lib/odoo-dev-panel/bin/odp";
 
@@ -120,6 +122,60 @@ fn rpc_send(state: State<Sidecar>, message: String) -> Result<(), String> {
         .map_err(|e| format!("core write failed: {e}"))
 }
 
+const MAIN_WINDOW: &str = "main";
+const WINDOW_SIZE_FILE: &str = ".window-size.json";
+// Larger than any real monitor: a stored side beyond this is damage, not a preference.
+const MAX_WINDOW_SIDE: f64 = 16384.0;
+
+// A window that starts maximized reports the maximized size in a resize event before it reports being
+// maximized. Resize events this soon after start are the restore, not the user, so they are not recorded.
+const WINDOW_SETTLE: Duration = Duration::from_secs(3);
+
+/// Size of the main window the last time it was neither maximized, minimized nor fullscreen, in logical pixels.
+struct WindowSize {
+    size: Mutex<Option<(f64, f64)>>,
+    opened: Instant,
+}
+
+/// The size worth returning to, or None while the window is maximized, minimized or fullscreen.
+fn plain_window_size(window: &tauri::Window) -> Option<(f64, f64)> {
+    let plain = !window.is_maximized().unwrap_or(false)
+        && !window.is_minimized().unwrap_or(false)
+        && !window.is_fullscreen().unwrap_or(false);
+    let size = window.inner_size().ok()?;
+    if !plain || size.width == 0 || size.height == 0 {
+        return None;
+    }
+    let logical = size.to_logical::<f64>(window.scale_factor().unwrap_or(1.0));
+    Some((logical.width, logical.height))
+}
+
+fn window_size_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join(WINDOW_SIZE_FILE))
+}
+
+fn load_window_size(app: &AppHandle) -> Option<(f64, f64)> {
+    let text = std::fs::read_to_string(window_size_path(app)?).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let width = value.get("width")?.as_f64()?;
+    let height = value.get("height")?.as_f64()?;
+    let sane = |side: f64| (1.0..=MAX_WINDOW_SIDE).contains(&side);
+    (sane(width) && sane(height)).then_some((width, height))
+}
+
+fn save_window_size(app: &AppHandle) {
+    let Some((width, height)) = *app.state::<WindowSize>().size.lock().unwrap() else {
+        return;
+    };
+    let Some(path) = window_size_path(app) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, serde_json::json!({ "width": width, "height": height }).to_string());
+}
+
 fn main() {
     // WebKitGTK's DMA-BUF renderer leaves blank or stale areas on some Wayland + NVIDIA (hybrid) machines.
     // This app draws only forms and tables, so the slower path costs nothing visible. Set the variable to 0 to opt out.
@@ -129,7 +185,47 @@ fn main() {
     tauri::Builder::default()
         // U8: the window opens with the size, position and maximized state it was closed with
         // (Wayland compositors place windows themselves, so there only the size is kept).
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // The plugin keeps everything except the size: it stores and restores physical pixels, so the
+        // window changes size whenever the display scale differs between closing and reopening (closed on
+        // a 100% monitor and reopened on a 150% one, 1280x840 came back as 760x520). A stored size once
+        // reached 40960x26880, which GDK cannot allocate, and the app crashed at every launch.
+        // The size is kept below, in logical pixels.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() & !StateFlags::SIZE)
+                .build(),
+        )
+        .manage(WindowSize { size: Mutex::new(None), opened: Instant::now() })
+        .setup(|app| {
+            if let (Some(window), Some((width, height))) =
+                (app.get_webview_window(MAIN_WINDOW), load_window_size(app.handle()))
+            {
+                *app.state::<WindowSize>().size.lock().unwrap() = Some((width, height));
+                let _ = window.set_size(LogicalSize::new(width, height));
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() != MAIN_WINDOW {
+                return;
+            }
+            let state = window.state::<WindowSize>();
+            match event {
+                WindowEvent::Resized(_) if state.opened.elapsed() >= WINDOW_SETTLE => {
+                    if let Some(size) = plain_window_size(window) {
+                        *state.size.lock().unwrap() = Some(size);
+                    }
+                }
+                WindowEvent::CloseRequested { .. } => {
+                    // Also covers a resize made before the window settled.
+                    if let Some(size) = plain_window_size(window) {
+                        *state.size.lock().unwrap() = Some(size);
+                    }
+                    save_window_size(window.app_handle());
+                }
+                _ => {}
+            }
+        })
         .manage(Sidecar::default())
         .invoke_handler(tauri::generate_handler![sidecar_start, sidecar_restart, rpc_send])
         .run(tauri::generate_context!())
