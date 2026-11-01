@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/SparkDrago05/odoo-dev-panel/security/advisories/new
+    about: Please do not open a public issue for vulnerabilities.

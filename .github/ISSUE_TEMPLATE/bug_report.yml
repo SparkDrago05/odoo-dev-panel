@@ -1,0 +1,29 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: Ubuntu release, Odoo version and Odoo Dev Panel version
+      placeholder: Ubuntu 24.04, Odoo 17.0, 0.14.1
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `odp --json doctor`
+      description: Check it for names you do not want to share first. Security problems go through SECURITY.md, not here.
+      render: json
