@@ -1,0 +1,22 @@
+name: My layout is not discovered correctly
+description: The panel does not find or understand your Odoo setup
+labels: [discovery]
+body:
+  - type: textarea
+    id: layout
+    attributes:
+      label: Folder structure
+      description: Where the source, venv, config files and filestore live.
+    validations:
+      required: true
+  - type: textarea
+    id: runtime
+    attributes:
+      label: How Odoo runs
+      description: The Linux user that runs it, and how it connects to PostgreSQL.
+    validations:
+      required: true
+  - type: textarea
+    id: found
+    attributes:
+      label: What the panel found, and what it should have found
