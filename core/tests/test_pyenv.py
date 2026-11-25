@@ -141,14 +141,18 @@ class PlanTest(Fixture):
         fake = self.tmp / "src"
         (fake / "odoo").mkdir(parents=True)
         (fake / "odoo" / "__init__.py").write_text("class release:\n    version = '19.0'\n")
+        # a dist of our own: uv-made venvs have no pip
+        (fake / "fakelib-1.0.dist-info").mkdir()
+        (fake / "fakelib-1.0.dist-info" / "METADATA").write_text("Metadata-Version: 2.1\nName: fakelib\nVersion: 1.0\n")
+        (fake / "fakelib.py").write_text("")
         import subprocess
 
-        out = subprocess.run([sys.executable, "-c", actions.VALIDATE_SCRIPT, str(fake), "pip", "no-such-dist"],
+        out = subprocess.run([sys.executable, "-c", actions.VALIDATE_SCRIPT, str(fake), "fakelib", "no-such-dist"],
                              capture_output=True, text=True, timeout=60)
         found = actions.parse_validate(out.stdout)
         self.assertTrue(found["odoo"]["ok"])
         self.assertEqual(found["odoo"]["version"], "19.0")
-        self.assertTrue(found["modules"]["pip"]["ok"])
+        self.assertTrue(found["modules"]["fakelib"]["ok"])
         self.assertEqual(found["modules"]["no-such-dist"]["error"], "not installed")
 
     def test_validate_script_picks_real_modules(self):
